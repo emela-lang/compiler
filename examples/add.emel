@@ -1,0 +1,7 @@
+fn add(x, y) -> i32 {
+    x + y
+}
+
+fn main() {
+  add(20, 22)
+}

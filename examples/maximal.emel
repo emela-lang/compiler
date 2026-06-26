@@ -1,0 +1,61 @@
+-- This file uses the largest subset the current compiler can type-check
+-- and build.
+
+#[requires(native)]
+fn tick!() -> Unit {
+  ()
+}
+
+fn add(x, y) -> I32 {
+  x + y
+}
+
+fn sub(x, y) -> I32 {
+  x - y
+}
+
+fn mul(x, y) -> I32 {
+  x * y
+}
+
+fn is_answer(value) -> Bool {
+  value == 42
+}
+
+fn below_limit(value) -> Bool {
+  value < 50
+}
+
+fn choose(flag, yes, no) -> I32 {
+  match flag {
+    true -> yes
+    false -> no
+  }
+}
+
+fn scoped(base) -> I32 {
+  doubled = {
+    tmp = mul(base, 2)
+    tmp
+  }
+  adjusted = match below_limit(doubled) {
+    true -> add(doubled, 2)
+    false -> sub(doubled, 2)
+  }
+  adjusted
+}
+
+fn main() -> I32 {
+  tick!()
+  product = mul(6, 7)
+  matches = is_answer(product)
+  nested = {
+    inner = scoped(20)
+    inner
+  }
+  result = choose(matches, nested, 1)
+  match result == 42 {
+    true -> result
+    false -> 2
+  }
+}
