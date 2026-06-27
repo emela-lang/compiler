@@ -62,7 +62,8 @@ fn main() {
   add(20, 22)
 }
 "#;
-        let (program, typed) = compile_source(source).unwrap();
+        let (program, typed) =
+            compile_source_for_target(source, Target::Aarch64AppleDarwin).unwrap();
         let main = typed
             .functions
             .iter()
@@ -70,17 +71,44 @@ fn main() {
             .unwrap();
         assert_eq!(main.ret, PrimType::I32);
 
-        let assembly = emit_assembly(Target::host().unwrap(), &program, &typed).unwrap();
+        let assembly = emit_assembly(Target::Aarch64AppleDarwin, &program, &typed).unwrap();
         assert!(assembly.contains(".globl _main"));
     }
 
     #[test]
     fn emits_assembly_match_expression() {
-        let (program, typed) =
-            compile_source("fn main() -> I32 { match true { true -> 1 false -> 0 } }").unwrap();
-        let assembly = emit_assembly(Target::host().unwrap(), &program, &typed).unwrap();
-        assert!(assembly.contains("cmp w9, #1"));
-        assert!(assembly.contains("cmp w9, #0"));
+        let (program, typed) = compile_source_for_target(
+            "fn main() -> I32 { match true { true -> 1 false -> 0 } }",
+            Target::Aarch64AppleDarwin,
+        )
+        .unwrap();
+        let assembly = emit_assembly(Target::Aarch64AppleDarwin, &program, &typed).unwrap();
+        assert!(assembly.contains("mov w10, #1"));
+        assert!(assembly.contains("mov w10, #0"));
+        assert!(assembly.contains("cmp w9, w10"));
+    }
+
+    #[test]
+    fn emits_x86_64_linux_assembly() {
+        let (program, typed) = compile_source_for_target(
+            r#"
+fn add(x, y) -> I32 {
+  x + y
+}
+
+fn main() -> I32 {
+  add(20, 22)
+}
+"#,
+            Target::X86_64UnknownLinuxGnu,
+        )
+        .unwrap();
+        let assembly = emit_assembly(Target::X86_64UnknownLinuxGnu, &program, &typed).unwrap();
+        assert!(assembly.contains(".globl main"));
+        assert!(assembly.contains("add:"));
+        assert!(assembly.contains("movl %edi, -4(%rbp)"));
+        assert!(assembly.contains("call add"));
+        assert!(assembly.contains("addl %r9d, %eax"));
     }
 
     #[test]
@@ -130,7 +158,7 @@ fn main!() -> I32 {
         assert!(main.effectful);
         assert_eq!(main.capabilities.len(), 1);
 
-        let assembly = emit_assembly(Target::host().unwrap(), &program, &typed).unwrap();
+        let assembly = emit_assembly(Target::Aarch64AppleDarwin, &program, &typed).unwrap();
         assert!(assembly.contains(".globl _main"));
         assert!(assembly.contains("requires Stdout"));
     }
@@ -164,7 +192,7 @@ fn main() -> I32 {
 "#,
         )
         .unwrap();
-        let assembly = emit_assembly(Target::host().unwrap(), &program, &typed).unwrap();
+        let assembly = emit_assembly(Target::Aarch64AppleDarwin, &program, &typed).unwrap();
         assert!(assembly.contains("add w0, w9, w0"));
     }
 

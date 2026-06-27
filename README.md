@@ -16,7 +16,7 @@ The current compiler supports:
 - effect markers with `!`
 - platform capability declarations with `#[requires(...)]`
 - target capability checking
-- native assembly generation for `aarch64-apple-darwin`
+- native assembly generation for `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`
 
 The language specification lives in the separate `emela-lang/specification` repository.
 
@@ -24,10 +24,13 @@ The language specification lives in the separate `emela-lang/specification` repo
 
 Development requires:
 
-- Rust toolchain with Cargo, edition 2021 compatible
+- Rust toolchain with Cargo, edition 2021 compatible; currently tested with `rustc 1.84.1`
 - `rustfmt`, normally installed with the Rust toolchain
-- Apple arm64 macOS for native code generation
-- A system C compiler available as `cc` for assembling and linking generated native assembly
+- Apple arm64 macOS or x86_64 Linux for native executable builds
+- A system C compiler available as `cc` for assembling and linking generated native assembly when building executables
+
+The native backend can emit assembly with `--emit-asm` without invoking `cc`.
+Building an executable invokes the host `cc`, so native executable builds require a matching host for the selected target.
 
 The compiler currently has no third-party Rust crate dependencies.
 
@@ -38,16 +41,18 @@ The compiler recognizes these target triples:
 | Target | Capability checking | Code generation |
 | --- | --- | --- |
 | `aarch64-apple-darwin` | Yes | Native arm64 assembly |
+| `x86_64-unknown-linux-gnu` | Yes | Native x86_64 System V assembly |
 | `wasm32-unknown-unknown` | Yes | Not implemented |
 | `wasm32-wasi` | Yes | Not implemented |
 
 Target capability sets currently follow SPEC-0003:
 
 - `aarch64-apple-darwin`: `Stdout`, `Stdin`, `Stderr`, `FileRead`, `FileWrite`, `Clock`, `Random`, `Env`, `Process`, `Network`
+- `x86_64-unknown-linux-gnu`: `Stdout`, `Stdin`, `Stderr`, `FileRead`, `FileWrite`, `Clock`, `Random`, `Env`, `Process`, `Network`
 - `wasm32-unknown-unknown`: no platform capabilities
 - `wasm32-wasi`: `Stdout`, `Stdin`, `Stderr`, `FileRead`, `FileWrite`, `Clock`, `Random`, `Env`
 
-If `--target` is omitted, the compiler uses the host target. At the moment, automatic host target detection only accepts Apple arm64 macOS.
+If `--target` is omitted, the compiler uses the host target. At the moment, automatic host target detection accepts Apple arm64 macOS and x86_64 Linux.
 
 ## Common Commands
 
@@ -82,10 +87,16 @@ Emit native assembly:
 cargo run -- --emit-asm /tmp/emela-maximal.s --check examples/maximal.emel
 ```
 
-Build a native executable:
+Build a native executable on a matching host:
 
 ```sh
 cargo run -- --target aarch64-apple-darwin examples/maximal.emel -o /tmp/emela-maximal
+```
+
+Emit x86_64 Linux assembly from any supported development host:
+
+```sh
+cargo run -- --target x86_64-unknown-linux-gnu --emit-asm /tmp/emela-maximal-x86_64.s --check examples/maximal.emel
 ```
 
 Run it and inspect the process exit code:
@@ -134,7 +145,7 @@ fn main!() -> I32 {
 
 ## Current Limitations
 
-- Native code generation only supports `aarch64-apple-darwin`.
+- Native executable building uses the host `cc`; cross-target native builds are not implemented.
 - WebAssembly targets are capability-checked only; WASM code generation is not implemented.
 - The native backend supports the current core language subset only.
 - Runtime implementations for real I/O capabilities are not connected yet.
