@@ -1,7 +1,7 @@
 -- This file uses the largest subset the current compiler can type-check
 -- and build.
 
-#[requires(native)]
+#[requires(Stdout)]
 fn tick!() -> Unit {
   ()
 }
@@ -45,7 +45,7 @@ fn scoped(base) -> I32 {
   adjusted
 }
 
-fn main() -> I32 {
+fn main!() -> I32 {
   tick!()
   product = mul(6, 7)
   matches = is_answer(product)
