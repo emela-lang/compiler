@@ -1,4 +1,6 @@
-#[derive(Debug, Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct Program {
     pub(crate) items: Vec<TopLevelItem>,
 }
@@ -15,7 +17,7 @@ impl Program {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) enum TopLevelItem {
     Import(ImportDecl),
     Struct(StructDecl),
@@ -23,37 +25,46 @@ pub(crate) enum TopLevelItem {
     Function(Function),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct ImportDecl {
     pub(crate) path: Vec<String>,
     pub(crate) name: String,
+    pub(crate) origin: ImportOrigin,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum ImportOrigin {
+    User,
+    Stdlib,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct StructDecl {
     pub(crate) name: String,
+    pub(crate) type_params: Vec<String>,
     pub(crate) field: StructField,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct StructField {
     pub(crate) name: String,
     pub(crate) ty: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct EnumDecl {
     pub(crate) name: String,
+    pub(crate) type_params: Vec<String>,
     pub(crate) variants: Vec<EnumVariant>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct EnumVariant {
     pub(crate) name: String,
     pub(crate) payload: Option<Type>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct Function {
     pub(crate) name: String,
     pub(crate) params: Vec<FunctionParam>,
@@ -62,18 +73,18 @@ pub(crate) struct Function {
     pub(crate) body: Block,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct FunctionParam {
     pub(crate) name: String,
     pub(crate) ty: Option<Type>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct Block {
     pub(crate) items: Vec<BlockItem>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) enum BlockItem {
     Binding {
         name: String,
@@ -83,10 +94,11 @@ pub(crate) enum BlockItem {
     Expr(Expr),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) enum Expr {
     Int(i32),
     Bool(bool),
+    String(String),
     Unit,
     Var(String),
     Call {
@@ -119,13 +131,13 @@ pub(crate) enum Expr {
     Block(Block),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct MatchArm {
     pub(crate) pattern: Pattern,
     pub(crate) expr: Expr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) enum Pattern {
     Int(i32),
     Bool(bool),
@@ -138,7 +150,7 @@ pub(crate) enum Pattern {
     Wildcard,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub(crate) enum BinaryOp {
     Add,
     Sub,
@@ -147,28 +159,31 @@ pub(crate) enum BinaryOp {
     Lt,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum PrimType {
     I32,
     Bool,
+    String,
     Unit,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) enum Type {
     Prim(PrimType),
     Named(String),
+    GenericParam(String),
+    Apply { name: String, args: Vec<Type> },
     Function(FunctionType),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct FunctionType {
     pub(crate) params: Vec<Type>,
     pub(crate) ret: Box<Type>,
     pub(crate) effectful: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum Capability {
     Stdout,
     Stdin,

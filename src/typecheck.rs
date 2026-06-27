@@ -1,8 +1,10 @@
 use std::collections::{BTreeSet, HashMap};
 
+use serde::Serialize;
+
 use crate::ast::{
     BinaryOp, Block, BlockItem, Capability, EnumDecl, Expr, FunctionType as AstFunctionType,
-    MatchArm, Pattern, PrimType, Program, StructDecl, TopLevelItem, Type,
+    ImportOrigin, MatchArm, Pattern, PrimType, Program, StructDecl, TopLevelItem, Type,
 };
 use crate::error::{Error, Result};
 use crate::platform::PlatformSpec;
@@ -24,6 +26,7 @@ struct FunctionType {
 #[derive(Debug, Clone)]
 struct VariantInfo {
     enum_name: String,
+    enum_type_params: Vec<String>,
     payload: Option<Type>,
 }
 
@@ -171,6 +174,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn register_types(&mut self) -> Result<()> {
+        self.register_builtin_types();
         for item in &self.program.items {
             match item {
                 TopLevelItem::Struct(decl) => {
@@ -202,32 +206,81 @@ impl<'a> TypeChecker<'a> {
                             variant.name.clone(),
                             VariantInfo {
                                 enum_name: decl.name.clone(),
+                                enum_type_params: decl.type_params.clone(),
                                 payload: variant.payload.clone(),
                             },
                         );
                     }
                     self.enums.insert(decl.name.clone(), decl);
                 }
-                TopLevelItem::Function(_) => {}
-                TopLevelItem::Import(_) => {}
+                TopLevelItem::Function(_) | TopLevelItem::Import(_) => {}
             }
         }
 
-        let mut referenced = Vec::new();
         for decl in self.structs.values() {
-            referenced.push(&decl.field.ty);
+            let mut seen = BTreeSet::new();
+            for param in &decl.type_params {
+                if !seen.insert(param) {
+                    return Err(Error::new(format!(
+                        "duplicate type parameter `{param}` in struct `{}`",
+                        decl.name
+                    )));
+                }
+            }
+            self.validate_type_in_scope(&decl.field.ty, &decl.type_params)?;
         }
         for decl in self.enums.values() {
+            let mut seen = BTreeSet::new();
+            for param in &decl.type_params {
+                if !seen.insert(param) {
+                    return Err(Error::new(format!(
+                        "duplicate type parameter `{param}` in enum `{}`",
+                        decl.name
+                    )));
+                }
+            }
             for variant in &decl.variants {
                 if let Some(payload) = &variant.payload {
-                    referenced.push(payload);
+                    self.validate_type_in_scope(payload, &decl.type_params)?;
                 }
             }
         }
-        for ty in referenced {
-            self.validate_type(ty)?;
-        }
         Ok(())
+    }
+
+    fn register_builtin_types(&mut self) {
+        self.variants.insert(
+            "Ok".to_string(),
+            VariantInfo {
+                enum_name: "Result".to_string(),
+                enum_type_params: vec!["T".to_string(), "E".to_string()],
+                payload: Some(Type::GenericParam("T".to_string())),
+            },
+        );
+        self.variants.insert(
+            "Err".to_string(),
+            VariantInfo {
+                enum_name: "Result".to_string(),
+                enum_type_params: vec!["T".to_string(), "E".to_string()],
+                payload: Some(Type::GenericParam("E".to_string())),
+            },
+        );
+        for name in [
+            "Unsupported",
+            "Unavailable",
+            "Interrupted",
+            "InvalidUtf8",
+            "Unknown",
+        ] {
+            self.variants.insert(
+                name.to_string(),
+                VariantInfo {
+                    enum_name: "PlatformError".to_string(),
+                    enum_type_params: Vec::new(),
+                    payload: None,
+                },
+            );
+        }
     }
 
     fn register_imports(&mut self) -> Result<()> {
@@ -235,6 +288,17 @@ impl<'a> TypeChecker<'a> {
             let TopLevelItem::Import(import) = item else {
                 continue;
             };
+            if import.origin == ImportOrigin::User
+                && import
+                    .path
+                    .first()
+                    .is_some_and(|package| package == "platform")
+            {
+                return Err(Error::new(format!(
+                    "platform import `{}` is only available to stdlib",
+                    format_import_path(&import.path, &import.name)
+                )));
+            }
             if self.functions.contains_key(&import.name) {
                 return Err(Error::new(format!(
                     "duplicate imported function `{}`",
@@ -440,6 +504,10 @@ impl<'a> TypeChecker<'a> {
                 let ty = self.known(Type::Prim(PrimType::Bool));
                 Ok(self.info(ty))
             }
+            Expr::String(_) => {
+                let ty = self.known(Type::Prim(PrimType::String));
+                Ok(self.info(ty))
+            }
             Expr::Unit => {
                 let ty = self.known(Type::Prim(PrimType::Unit));
                 Ok(self.info(ty))
@@ -454,7 +522,7 @@ impl<'a> TypeChecker<'a> {
                             "enum variant `{name}` requires a payload"
                         )));
                     }
-                    let ty = self.known(Type::Named(variant.enum_name));
+                    let ty = self.known(enum_result_type(&variant, Vec::new()));
                     return Ok(self.info(ty));
                 }
                 if let Some(function_ty) = self.function_value_type(name) {
@@ -573,11 +641,25 @@ impl<'a> TypeChecker<'a> {
                 args.len()
             )));
         }
+        let mut substitutions = HashMap::new();
         let arg = self.check_expr(&args[0], scope)?;
-        let expected = self.known(payload_ty.clone());
+        let arg_ty = self.resolve_known(arg.ty, "enum variant payload type")?;
+        infer_type_arguments(payload_ty, &arg_ty, &mut substitutions);
+        let result_args = variant
+            .enum_type_params
+            .iter()
+            .map(|param| {
+                substitutions
+                    .get(param)
+                    .cloned()
+                    .unwrap_or_else(|| Type::GenericParam(param.clone()))
+            })
+            .collect::<Vec<_>>();
+        let expected_ty = substitute_type(payload_ty, &substitutions);
+        let expected = self.known(expected_ty);
         self.unify(arg.ty, expected)?;
         Ok(ExprInfo {
-            ty: self.known(Type::Named(variant.enum_name.clone())),
+            ty: self.known(enum_result_type(variant, result_args)),
             effectful: arg.effectful,
             capabilities: arg.capabilities,
         })
@@ -686,10 +768,19 @@ impl<'a> TypeChecker<'a> {
                     .get(name)
                     .cloned()
                     .ok_or_else(|| Error::new(format!("unknown enum variant `{name}`")))?;
-                self.expect_pattern_type(expected, Type::Named(variant.enum_name.clone()))?;
+                let substitutions = self.pattern_type_arguments(expected, &variant)?;
+                self.expect_pattern_type(
+                    expected,
+                    enum_result_type(&variant, substitutions.clone()),
+                )?;
                 match (&variant.payload, payload) {
                     (Some(payload_ty), Some(payload_pattern)) => {
-                        self.check_pattern(payload_pattern, payload_ty, scope)
+                        let payload_ty = substitute_type_for_params(
+                            payload_ty,
+                            &variant.enum_type_params,
+                            &substitutions,
+                        );
+                        self.check_pattern(payload_pattern, &payload_ty, scope)
                     }
                     (Some(_), None) => Err(Error::new(format!(
                         "enum variant `{name}` pattern requires a payload"
@@ -844,39 +935,132 @@ impl<'a> TypeChecker<'a> {
             Type::Prim(PrimType::Unit) => {
                 arms.iter().any(|arm| matches!(arm.pattern, Pattern::Unit))
             }
-            Type::Prim(PrimType::I32) => false,
-            Type::Function(_) => false,
-            Type::Named(name) => {
-                let Some(decl) = self.enums.get(name) else {
-                    return false;
-                };
-                decl.variants.iter().all(|variant| {
+            Type::Prim(PrimType::I32) | Type::Prim(PrimType::String) => false,
+            Type::Function(_) | Type::GenericParam(_) => false,
+            Type::Named(name) => self.enum_variant_names(name).is_some_and(|variants| {
+                variants.iter().all(|variant_name| {
                     arms.iter().any(|arm| match &arm.pattern {
-                        Pattern::Variant { name, .. } => name == &variant.name,
+                        Pattern::Variant { name, .. } => name == variant_name,
                         _ => false,
                     })
                 })
-            }
+            }),
+            Type::Apply { name, .. } => self.enum_variant_names(name).is_some_and(|variants| {
+                variants.iter().all(|variant_name| {
+                    arms.iter().any(|arm| match &arm.pattern {
+                        Pattern::Variant { name, .. } => name == variant_name,
+                        _ => false,
+                    })
+                })
+            }),
         }
     }
 
+    fn enum_variant_names(&self, name: &str) -> Option<Vec<String>> {
+        if name == "Result" {
+            return Some(vec!["Ok".to_string(), "Err".to_string()]);
+        }
+        if name == "PlatformError" {
+            return Some(
+                [
+                    "Unsupported",
+                    "Unavailable",
+                    "Interrupted",
+                    "InvalidUtf8",
+                    "Unknown",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            );
+        }
+        self.enums.get(name).map(|decl| {
+            decl.variants
+                .iter()
+                .map(|variant| variant.name.clone())
+                .collect()
+        })
+    }
+
     fn validate_type(&self, ty: &Type) -> Result<()> {
+        self.validate_type_in_scope(ty, &[])
+    }
+
+    fn validate_type_in_scope(&self, ty: &Type, type_params: &[String]) -> Result<()> {
         match ty {
             Type::Prim(_) => Ok(()),
             Type::Named(name) => {
-                if self.structs.contains_key(name) || self.enums.contains_key(name) {
+                if type_params.contains(name)
+                    || name == "PlatformError"
+                    || self
+                        .structs
+                        .get(name)
+                        .is_some_and(|decl| decl.type_params.is_empty())
+                    || self
+                        .enums
+                        .get(name)
+                        .is_some_and(|decl| decl.type_params.is_empty())
+                {
                     Ok(())
                 } else {
                     Err(Error::new(format!("unknown type `{name}`")))
                 }
             }
+            Type::GenericParam(name) => {
+                if type_params.contains(name) {
+                    Ok(())
+                } else {
+                    Err(Error::new(format!("unknown type parameter `{name}`")))
+                }
+            }
+            Type::Apply { name, args } => {
+                let expected = if name == "Result" {
+                    Some(2)
+                } else if let Some(decl) = self.structs.get(name) {
+                    Some(decl.type_params.len())
+                } else {
+                    self.enums.get(name).map(|decl| decl.type_params.len())
+                }
+                .ok_or_else(|| Error::new(format!("unknown generic type `{name}`")))?;
+                if args.len() != expected {
+                    return Err(Error::new(format!(
+                        "generic type `{name}` expects {expected} type argument(s), got {}",
+                        args.len()
+                    )));
+                }
+                for arg in args {
+                    self.validate_type_in_scope(arg, type_params)?;
+                }
+                Ok(())
+            }
             Type::Function(function) => {
                 for param in &function.params {
-                    self.validate_type(param)?;
+                    self.validate_type_in_scope(param, type_params)?;
                 }
-                self.validate_type(&function.ret)
+                self.validate_type_in_scope(&function.ret, type_params)
             }
         }
+    }
+
+    fn pattern_type_arguments(&self, expected: &Type, variant: &VariantInfo) -> Result<Vec<Type>> {
+        if variant.enum_type_params.is_empty() {
+            self.expect_pattern_type(expected, Type::Named(variant.enum_name.clone()))?;
+            return Ok(Vec::new());
+        }
+        let Type::Apply { name, args } = expected else {
+            return Err(Error::new(format!(
+                "type mismatch: expected generic enum `{}`, got {:?}",
+                variant.enum_name, expected
+            )));
+        };
+        if name != &variant.enum_name {
+            return Err(Error::new(format!(
+                "type mismatch: expected {:?}, got {:?}",
+                enum_result_type(variant, args.clone()),
+                expected
+            )));
+        }
+        Ok(args.clone())
     }
 
     fn function_value_type(&mut self, name: &str) -> Option<Type> {
@@ -936,6 +1120,16 @@ impl<'a> TypeChecker<'a> {
             return Ok(());
         }
         match (self.types[ra].value.clone(), self.types[rb].value.clone()) {
+            (Some(left), Some(right)) if type_is_generic_placeholder(&left) => {
+                self.types[ra].value = Some(right);
+                self.types[rb].parent = ra;
+                Ok(())
+            }
+            (Some(left), Some(right)) if type_is_generic_placeholder(&right) => {
+                self.types[rb].value = Some(left);
+                self.types[ra].parent = rb;
+                Ok(())
+            }
             (Some(left), Some(right)) if left != right => Err(Error::new(format!(
                 "type mismatch: expected {:?}, got {:?}",
                 left, right
@@ -969,12 +1163,12 @@ impl<'a> TypeChecker<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct TypedProgram {
     pub(crate) functions: Vec<TypedFunction>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct TypedFunction {
     pub(crate) name: String,
     pub(crate) params: Vec<Type>,
@@ -987,4 +1181,94 @@ fn format_import_path(path: &[String], name: &str) -> String {
     let mut parts = path.to_vec();
     parts.push(name.to_string());
     parts.join(".")
+}
+
+fn enum_result_type(variant: &VariantInfo, args: Vec<Type>) -> Type {
+    if args.is_empty() {
+        Type::Named(variant.enum_name.clone())
+    } else {
+        Type::Apply {
+            name: variant.enum_name.clone(),
+            args,
+        }
+    }
+}
+
+fn infer_type_arguments(pattern: &Type, actual: &Type, substitutions: &mut HashMap<String, Type>) {
+    match pattern {
+        Type::GenericParam(name) => {
+            substitutions
+                .entry(name.clone())
+                .or_insert_with(|| actual.clone());
+        }
+        Type::Apply { name, args } => {
+            if let Type::Apply {
+                name: actual_name,
+                args: actual_args,
+            } = actual
+            {
+                if name == actual_name && args.len() == actual_args.len() {
+                    for (left, right) in args.iter().zip(actual_args.iter()) {
+                        infer_type_arguments(left, right, substitutions);
+                    }
+                }
+            }
+        }
+        Type::Function(function) => {
+            if let Type::Function(actual_function) = actual {
+                for (left, right) in function.params.iter().zip(actual_function.params.iter()) {
+                    infer_type_arguments(left, right, substitutions);
+                }
+                infer_type_arguments(&function.ret, &actual_function.ret, substitutions);
+            }
+        }
+        Type::Prim(_) | Type::Named(_) => {}
+    }
+}
+
+fn substitute_type(ty: &Type, substitutions: &HashMap<String, Type>) -> Type {
+    match ty {
+        Type::GenericParam(name) => substitutions
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| Type::GenericParam(name.clone())),
+        Type::Apply { name, args } => Type::Apply {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|arg| substitute_type(arg, substitutions))
+                .collect(),
+        },
+        Type::Function(function) => Type::Function(AstFunctionType {
+            params: function
+                .params
+                .iter()
+                .map(|param| substitute_type(param, substitutions))
+                .collect(),
+            ret: Box::new(substitute_type(&function.ret, substitutions)),
+            effectful: function.effectful,
+        }),
+        Type::Prim(_) | Type::Named(_) => ty.clone(),
+    }
+}
+
+fn substitute_type_for_params(ty: &Type, params: &[String], args: &[Type]) -> Type {
+    let substitutions = params
+        .iter()
+        .cloned()
+        .zip(args.iter().cloned())
+        .collect::<HashMap<_, _>>();
+    substitute_type(ty, &substitutions)
+}
+
+fn type_is_generic_placeholder(ty: &Type) -> bool {
+    match ty {
+        Type::GenericParam(_) => true,
+        Type::Apply { args, .. } => args.iter().any(type_is_generic_placeholder),
+        Type::Function(function) => {
+            function.params.iter().any(type_is_generic_placeholder)
+                || type_is_generic_placeholder(&function.ret)
+        }
+        Type::Prim(_) | Type::Named(_) => false,
+    }
 }

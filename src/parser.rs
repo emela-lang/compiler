@@ -1,7 +1,7 @@
 use crate::ast::{
     BinaryOp, Block, BlockItem, Capability, EnumDecl, EnumVariant, Expr, Function, FunctionParam,
-    FunctionType, ImportDecl, MatchArm, Pattern, PrimType, Program, StructDecl, StructField,
-    TopLevelItem, Type,
+    FunctionType, ImportDecl, ImportOrigin, MatchArm, Pattern, PrimType, Program, StructDecl,
+    StructField, TopLevelItem, Type,
 };
 use crate::error::{Error, Result};
 use crate::lexer::{Token, TokenKind};
@@ -53,12 +53,17 @@ impl Parser {
         if path.is_empty() {
             return Err(Error::new("import path must include a package and item"));
         }
-        Ok(ImportDecl { path, name })
+        Ok(ImportDecl {
+            path,
+            name,
+            origin: ImportOrigin::User,
+        })
     }
 
     fn parse_struct_decl(&mut self) -> Result<StructDecl> {
         self.expect(&TokenKind::Struct)?;
         let name = self.expect_ident()?;
+        let type_params = self.parse_type_parameter_list()?;
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();
         let field_name = self.expect_ident()?;
@@ -68,6 +73,7 @@ impl Parser {
         self.expect(&TokenKind::RBrace)?;
         Ok(StructDecl {
             name,
+            type_params,
             field: StructField {
                 name: field_name,
                 ty,
@@ -78,6 +84,7 @@ impl Parser {
     fn parse_enum_decl(&mut self) -> Result<EnumDecl> {
         self.expect(&TokenKind::Enum)?;
         let name = self.expect_ident()?;
+        let type_params = self.parse_type_parameter_list()?;
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();
         let mut variants = Vec::new();
@@ -100,7 +107,24 @@ impl Parser {
             self.skip_newlines();
         }
         self.expect(&TokenKind::RBrace)?;
-        Ok(EnumDecl { name, variants })
+        Ok(EnumDecl {
+            name,
+            type_params,
+            variants,
+        })
+    }
+
+    fn parse_type_parameter_list(&mut self) -> Result<Vec<String>> {
+        if !self.eat(&TokenKind::Lt) {
+            return Ok(Vec::new());
+        }
+        let mut params = Vec::new();
+        params.push(self.expect_ident()?);
+        while self.eat(&TokenKind::Comma) {
+            params.push(self.expect_ident()?);
+        }
+        self.expect(&TokenKind::Gt)?;
+        Ok(params)
     }
 
     fn parse_attributes(&mut self) -> Result<FunctionAttributes> {
@@ -335,6 +359,10 @@ impl Parser {
                 self.bump();
                 Ok(Expr::Int(value))
             }
+            TokenKind::String(value) => {
+                self.bump();
+                Ok(Expr::String(value))
+            }
             TokenKind::True => {
                 self.bump();
                 Ok(Expr::Bool(true))
@@ -421,12 +449,26 @@ impl Parser {
             return self.parse_function_type();
         }
         let name = self.expect_ident()?;
-        match name.as_str() {
-            "I32" | "i32" => Ok(Type::Prim(PrimType::I32)),
-            "Bool" | "bool" => Ok(Type::Prim(PrimType::Bool)),
-            "Unit" | "unit" => Ok(Type::Prim(PrimType::Unit)),
-            _ => Ok(Type::Named(name)),
+        let base = match name.as_str() {
+            "I32" | "i32" => Type::Prim(PrimType::I32),
+            "Bool" | "bool" => Type::Prim(PrimType::Bool),
+            "String" | "string" => Type::Prim(PrimType::String),
+            "Unit" | "unit" => Type::Prim(PrimType::Unit),
+            _ => Type::Named(name),
+        };
+        if !self.eat(&TokenKind::Lt) {
+            return Ok(base);
         }
+        let Type::Named(name) = base else {
+            return Err(Error::new("only named types can take type arguments"));
+        };
+        let mut args = Vec::new();
+        args.push(self.parse_type()?);
+        while self.eat(&TokenKind::Comma) {
+            args.push(self.parse_type()?);
+        }
+        self.expect(&TokenKind::Gt)?;
+        Ok(Type::Apply { name, args })
     }
 
     fn parse_function_type(&mut self) -> Result<Type> {

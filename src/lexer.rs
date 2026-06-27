@@ -11,6 +11,7 @@ pub(crate) enum TokenKind {
     False,
     Ident(String),
     Int(i32),
+    String(String),
     LParen,
     RParen,
     LBrace,
@@ -27,6 +28,7 @@ pub(crate) enum TokenKind {
     Arrow,
     Pipe,
     Lt,
+    Gt,
     Plus,
     Minus,
     Star,
@@ -88,6 +90,7 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>> {
             b'#' => push_one(&mut tokens, TokenKind::Hash, pos, &mut i),
             b'!' => push_one(&mut tokens, TokenKind::Bang, pos, &mut i),
             b'<' => push_one(&mut tokens, TokenKind::Lt, pos, &mut i),
+            b'>' => push_one(&mut tokens, TokenKind::Gt, pos, &mut i),
             b'+' => push_one(&mut tokens, TokenKind::Plus, pos, &mut i),
             b'*' => push_one(&mut tokens, TokenKind::Star, pos, &mut i),
             b'-' => push_one(&mut tokens, TokenKind::Minus, pos, &mut i),
@@ -111,6 +114,59 @@ pub(crate) fn lex(source: &str) -> Result<Vec<Token>> {
                 tokens.push(Token {
                     kind: TokenKind::Int(value),
                     pos: start,
+                });
+            }
+            b'"' => {
+                i += 1;
+                let mut value = String::new();
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        b'\\' => {
+                            i += 1;
+                            if i >= bytes.len() {
+                                return Err(Error::new(format!(
+                                    "unterminated string literal at byte {pos}"
+                                )));
+                            }
+                            let escaped = match bytes[i] {
+                                b'"' => '"',
+                                b'\\' => '\\',
+                                b'n' => '\n',
+                                b't' => '\t',
+                                other => {
+                                    return Err(Error::new(format!(
+                                        "unsupported string escape {:?} at byte {i}",
+                                        other as char
+                                    )));
+                                }
+                            };
+                            value.push(escaped);
+                            i += 1;
+                        }
+                        b'\n' => {
+                            return Err(Error::new(format!(
+                                "unterminated string literal at byte {pos}"
+                            )));
+                        }
+                        _ => {
+                            let ch = source[i..].chars().next().expect("valid char boundary");
+                            value.push(ch);
+                            i += ch.len_utf8();
+                        }
+                    }
+                }
+                if i > bytes.len() || bytes.get(i.saturating_sub(1)) != Some(&b'"') {
+                    return Err(Error::new(format!(
+                        "unterminated string literal at byte {pos}"
+                    )));
+                }
+                tokens.push(Token {
+                    kind: TokenKind::String(value),
+                    pos,
                 });
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
