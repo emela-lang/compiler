@@ -323,7 +323,7 @@ where
 
 fn print_help() {
     eprintln!(
-        "Usage:\n  emela check [--backend PROFILE|PATH] [--target TARGET] [--package DIR]... [--library] INPUT.emel\n  emela build --backend PROFILE|PATH [--target TARGET] [--package DIR]... [--library] [--artifact PATH | --output PATH] INPUT.emel\n  emela package fetch"
+        "Usage:\n  emela check [--backend PROFILE|PATH] [--target TARGET] [--package DIR]... [--library] INPUT.emel\n  emela build --backend PROFILE|PATH [--target TARGET] [--package DIR]... [--library] [--artifact PATH | --output PATH] INPUT.emel\n  emela package fetch\n  emela --version"
     );
 }
 
