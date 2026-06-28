@@ -1,9 +1,9 @@
-# Emela Compiler
+# Emela
 
 Emela is an experimental functional language intended to compile to native code and WebAssembly.
-This repository contains the early compiler implementation for the minimal core language.
+This repository contains the early Emela CLI and compiler implementation for the minimal core language.
 
-The current compiler supports:
+The current CLI supports:
 
 - top-level `fn` definitions
 - `main` and `main!` executable entry points
@@ -30,6 +30,34 @@ The current compiler supports:
 - library checking mode for compilation units without `main` / `main!`
 
 The language specification lives in the separate `emela-lang/specification` repository.
+
+## Install
+
+Dogfooding builds are published from `main` as timestamped prereleases.
+They are intended for quickly trying the current compiler state, not for stable production use.
+
+Install the latest dogfooding build:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/emela-lang/emela/main/install.sh | sh
+```
+
+By default this installs `emela` into `$HOME/.emela/bin`.
+Set `EMELA_INSTALL_DIR` to choose another directory.
+
+Install a specific timestamp release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/emela-lang/emela/main/install.sh \
+  | EMELA_VERSION=v0.0.20260628120000 sh
+```
+
+Check the installed version:
+
+```sh
+emela --version
+emela check --backend js-node examples/minimal.emel
+```
 
 ## Requirements
 
