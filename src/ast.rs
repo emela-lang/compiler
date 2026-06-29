@@ -2,13 +2,28 @@ use crate::error::Span;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Program {
+    pub(crate) module: Option<String>,
+    pub(crate) imports: Vec<Import>,
     pub(crate) functions: Vec<Function>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Import {
+    pub(crate) path: Vec<String>,
+    pub(crate) span: Span,
+}
+
+impl Import {
+    pub(crate) fn item_name(&self) -> &str {
+        self.path.last().map(String::as_str).unwrap_or("")
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct Function {
     pub(crate) name: String,
     pub(crate) name_span: Span,
+    pub(crate) is_public: bool,
     pub(crate) params: Vec<Param>,
     pub(crate) ret: Type,
     pub(crate) effects: EffectRow,

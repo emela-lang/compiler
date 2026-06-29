@@ -1,4 +1,6 @@
-use crate::ast::{BinaryOp, Block, BlockItem, EffectRow, Expr, Function, Param, Program, Type};
+use crate::ast::{
+    BinaryOp, Block, BlockItem, EffectRow, Expr, Function, Import, Param, Program, Type,
+};
 use crate::error::{Diagnostic, Error, Result, Span};
 use crate::lexer::{lex, Token, TokenKind};
 
@@ -14,16 +16,50 @@ struct Parser {
 
 impl Parser {
     fn parse_program(&mut self) -> Result<Program> {
+        let mut module = None;
+        let mut imports = Vec::new();
         let mut functions = Vec::new();
         self.skip_newlines();
-        while !self.at(&TokenKind::Eof) {
-            functions.push(self.parse_function()?);
+        if self.eat(&TokenKind::Module) {
+            module = Some(self.parse_path_name()?);
             self.skip_newlines();
         }
-        Ok(Program { functions })
+        while !self.at(&TokenKind::Eof) {
+            if self.at(&TokenKind::Import) {
+                imports.push(self.parse_import()?);
+            } else {
+                let is_public = self.eat(&TokenKind::Pub);
+                functions.push(self.parse_function(is_public)?);
+            }
+            self.skip_newlines();
+        }
+        Ok(Program {
+            module,
+            imports,
+            functions,
+        })
     }
 
-    fn parse_function(&mut self) -> Result<Function> {
+    fn parse_import(&mut self) -> Result<Import> {
+        let start = self.expect(&TokenKind::Import)?.span;
+        let mut path = vec![self.expect_ident()?];
+        while self.eat(&TokenKind::Dot) {
+            path.push(self.expect_ident()?);
+        }
+        if path.len() < 2 {
+            return Err(Error::diagnostic(Diagnostic::new("Invalid import").label(
+                start.clone(),
+                "import path must contain at least two names",
+            )));
+        }
+        let end = self.previous_span();
+        Ok(Import {
+            path,
+            span: start.merge(&end),
+        })
+    }
+
+    fn parse_function(&mut self, is_public: bool) -> Result<Function> {
         self.expect(&TokenKind::Fn)?;
         let name_span = self.peek().span.clone();
         let name = self.expect_ident()?;
@@ -37,6 +73,7 @@ impl Parser {
         Ok(Function {
             name,
             name_span,
+            is_public,
             params,
             ret,
             effects,
@@ -276,6 +313,14 @@ impl Parser {
         }
     }
 
+    fn parse_path_name(&mut self) -> Result<String> {
+        let mut parts = vec![self.expect_ident()?];
+        while self.eat(&TokenKind::Dot) {
+            parts.push(self.expect_ident()?);
+        }
+        Ok(parts.join("."))
+    }
+
     fn expect(&mut self, expected: &TokenKind) -> Result<Token> {
         if self.at(expected) {
             Ok(self.bump())
@@ -308,6 +353,10 @@ impl Parser {
         let token = self.tokens[self.current].clone();
         self.current += 1;
         token
+    }
+
+    fn previous_span(&self) -> Span {
+        self.tokens[self.current.saturating_sub(1)].span.clone()
     }
 }
 

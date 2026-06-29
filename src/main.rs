@@ -1,6 +1,7 @@
 mod ast;
 mod driver;
 mod error;
+mod imports;
 mod ir;
 mod js;
 mod lexer;
