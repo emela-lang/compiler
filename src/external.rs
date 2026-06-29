@@ -7,12 +7,21 @@ use crate::error::{Error, Result};
 pub(crate) struct ExternalBindings {
     pub(crate) js_symbol: Option<String>,
     pub(crate) native: Option<NativeBinding>,
+    pub(crate) wasm: Option<WasmBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct NativeBinding {
     pub(crate) symbol: String,
     pub(crate) links: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct WasmBinding {
+    pub(crate) module: String,
+    pub(crate) symbol: String,
+    pub(crate) params: Vec<String>,
+    pub(crate) result: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,6 +104,73 @@ impl ExternalRegistry {
                     Type::Prim(PrimType::I32),
                     vec![Capability::Clock],
                     "__emela_now_i32",
+                ),
+            ],
+        }
+    }
+
+    pub(crate) fn builtin_wasm() -> Self {
+        Self::builtin_wasi()
+    }
+
+    pub(crate) fn builtin_wasi() -> Self {
+        Self {
+            functions: vec![
+                wasi_function(
+                    &["platform", "io"],
+                    "_write_stdout_utf8!",
+                    vec![Type::Prim(PrimType::String)],
+                    result_type(Type::Prim(PrimType::Unit)),
+                    vec![Capability::Stdout],
+                ),
+                wasi_function(
+                    &["platform", "io"],
+                    "_read_stdin_utf8!",
+                    Vec::new(),
+                    result_type(Type::Prim(PrimType::String)),
+                    vec![Capability::Stdin],
+                ),
+                wasi_function(
+                    &["platform", "io"],
+                    "_write_stderr_utf8!",
+                    vec![Type::Prim(PrimType::String)],
+                    result_type(Type::Prim(PrimType::Unit)),
+                    vec![Capability::Stderr],
+                ),
+                wasi_function(
+                    &["platform", "clock"],
+                    "_now_i32!",
+                    Vec::new(),
+                    Type::Prim(PrimType::I32),
+                    vec![Capability::Clock],
+                ),
+                wasi_function(
+                    &["platform", "random"],
+                    "_random_i32!",
+                    Vec::new(),
+                    Type::Prim(PrimType::I32),
+                    vec![Capability::Random],
+                ),
+                wasi_function(
+                    &["platform", "fs"],
+                    "_read_file_utf8!",
+                    vec![Type::Prim(PrimType::String)],
+                    result_type(Type::Prim(PrimType::String)),
+                    vec![Capability::FileRead],
+                ),
+                wasi_function(
+                    &["platform", "fs"],
+                    "_write_file_utf8!",
+                    vec![Type::Prim(PrimType::String), Type::Prim(PrimType::String)],
+                    result_type(Type::Prim(PrimType::Unit)),
+                    vec![Capability::FileWrite],
+                ),
+                wasi_function(
+                    &["platform", "env"],
+                    "_get_env!",
+                    vec![Type::Prim(PrimType::String)],
+                    result_type(Type::Prim(PrimType::String)),
+                    vec![Capability::Env],
                 ),
             ],
         }
@@ -252,5 +328,23 @@ fn js_function(
             js_symbol: Some(symbol.to_string()),
             ..ExternalBindings::default()
         },
+    }
+}
+
+fn wasi_function(
+    path: &[&str],
+    name: &str,
+    params: Vec<Type>,
+    ret: Type,
+    capabilities: Vec<Capability>,
+) -> ExternalFunction {
+    ExternalFunction {
+        path: path.iter().map(|part| part.to_string()).collect(),
+        name: name.to_string(),
+        params,
+        ret,
+        effectful: true,
+        capabilities,
+        bindings: ExternalBindings::default(),
     }
 }

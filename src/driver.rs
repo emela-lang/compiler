@@ -70,7 +70,11 @@ pub(crate) fn compile_source_for_target(
     source: &str,
     target: Target,
 ) -> Result<(Program, TypedProgram)> {
-    let platform = PlatformSpec::native_for_target(target);
+    let platform = match target {
+        Target::Wasm32Wasi => PlatformSpec::wasi(),
+        Target::Wasm32UnknownUnknown => PlatformSpec::wasm(),
+        _ => PlatformSpec::native_for_target(target),
+    };
     compile_source_for_platform(source, &platform)
 }
 
@@ -139,6 +143,7 @@ fn test_default_packages() -> Vec<PackageSource> {
         source_root.join("io.emel"),
         r#"import platform.io._write_stdout_utf8!
 import platform.io._read_stdin_utf8!
+import platform.io._write_stderr_utf8!
 
 #[requires(Stdout)]
 fn write_stdout_utf8!(value: String) -> Result<Unit, PlatformError> {
@@ -148,6 +153,11 @@ fn write_stdout_utf8!(value: String) -> Result<Unit, PlatformError> {
 #[requires(Stdin)]
 fn read_stdin_utf8!() -> Result<String, PlatformError> {
   _read_stdin_utf8!()
+}
+
+#[requires(Stderr)]
+fn write_stderr_utf8!(value: String) -> Result<Unit, PlatformError> {
+  _write_stderr_utf8!(value)
 }
 "#,
     )
@@ -159,6 +169,45 @@ fn read_stdin_utf8!() -> Result<String, PlatformError> {
 #[requires(Clock)]
 fn now_i32!() -> I32 {
   _now_i32!()
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        source_root.join("fs.emel"),
+        r#"import platform.fs._read_file_utf8!
+import platform.fs._write_file_utf8!
+
+#[requires(FileRead)]
+fn read_file_utf8!(path: String) -> Result<String, PlatformError> {
+  _read_file_utf8!(path)
+}
+
+#[requires(FileWrite)]
+fn write_file_utf8!(path: String, content: String) -> Result<Unit, PlatformError> {
+  _write_file_utf8!(path, content)
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        source_root.join("random.emel"),
+        r#"import platform.random._random_i32!
+
+#[requires(Random)]
+fn random_i32!() -> I32 {
+  _random_i32!()
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        source_root.join("env.emel"),
+        r#"import platform.env._get_env!
+
+#[requires(Env)]
+fn get_env!(key: String) -> Result<String, PlatformError> {
+  _get_env!(key)
 }
 "#,
     )

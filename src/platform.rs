@@ -155,6 +155,22 @@ impl PlatformSpec {
             externs: ExternalRegistry::builtin_js(),
         }
     }
+
+    pub(crate) fn wasm() -> Self {
+        Self {
+            name: "wasm32-unknown-unknown".to_string(),
+            provided_capabilities: Target::Wasm32UnknownUnknown.provided_capabilities(),
+            externs: ExternalRegistry::builtin_wasm(),
+        }
+    }
+
+    pub(crate) fn wasi() -> Self {
+        Self {
+            name: "wasm32-wasi".to_string(),
+            provided_capabilities: Target::Wasm32Wasi.provided_capabilities(),
+            externs: ExternalRegistry::builtin_wasi(),
+        }
+    }
 }
 
 impl fmt::Display for PlatformSpec {

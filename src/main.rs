@@ -26,7 +26,9 @@ mod tests {
     use crate::ast::{Capability, FunctionType, PrimType, Type};
     use crate::backend::{
         emit_js_artifact, emit_js_library_artifact, emit_native_assembly,
-        emit_native_assembly_for_platform, native_link_args, Backend, EmitOptions, ExternalBackend,
+        emit_native_assembly_for_platform, emit_wasi_artifact, emit_wasi_library_artifact,
+        emit_wasm_artifact, emit_wasm_library_artifact, native_link_args, Backend, EmitOptions,
+        ExternalBackend,
     };
     use crate::driver::{
         compile_internal_source_for_platform, compile_source, compile_source_for_platform,
@@ -662,6 +664,398 @@ fn main() -> I32 {
         assert!(assembly.contains("movq %rdi, -8(%rbp)"));
         assert!(assembly.contains("call add"));
         assert!(assembly.contains("addl %r9d, %eax"));
+    }
+
+    #[test]
+    fn emits_wasm_add_function() {
+        let (program, _typed) = compile_source(
+            r#"
+fn main() -> I32 {
+  1.add(2)
+}
+"#,
+        )
+        .unwrap();
+        let wasm = emit_wasm_artifact(&program).unwrap();
+        assert!(wasm.contains("(module"));
+        assert!(wasm.contains("(func $main"));
+        assert!(wasm.contains("i32.const 1"));
+        assert!(wasm.contains("i32.const 2"));
+        assert!(wasm.contains("i32.add"));
+        assert!(wasm.contains("(export \"main\" (func $main)"));
+    }
+
+    #[test]
+    fn emits_wasm_match_expression() {
+        let (program, _typed) =
+            compile_source("fn main() -> I32 { match true { true -> 1 false -> 0 } }").unwrap();
+        let wasm = emit_wasm_artifact(&program).unwrap();
+        assert!(wasm.contains("(if (result i32)"));
+        assert!(wasm.contains("i32.const 1"));
+        assert!(wasm.contains("i32.eq"));
+        assert!(wasm.contains("i32.const 0"));
+    }
+
+    #[test]
+    fn emits_wasm_library_without_entrypoint_export() {
+        let (program, _typed) = compile_source_for_platform_with_mode(
+            r#"
+fn add(x: I32, y: I32) -> I32 {
+  x.add(y)
+}
+"#,
+            &PlatformSpec::wasm(),
+            CheckMode::Library,
+        )
+        .unwrap();
+        let wasm = emit_wasm_library_artifact(&program).unwrap();
+        assert!(wasm.contains("(func $add"));
+    }
+
+    #[test]
+    fn wasm_backend_parse_and_compile() {
+        let backend = Backend::parse("wasm").unwrap();
+        assert!(matches!(
+            backend.target(),
+            Some(Target::Wasm32UnknownUnknown)
+        ));
+        let platform = backend.platform();
+        assert_eq!(platform.name, "wasm32-unknown-unknown");
+    }
+
+    #[test]
+    fn wasm_backend_emits_enum_match() {
+        let (program, _typed) = compile_source_for_target(
+            r#"
+fn main() -> I32 {
+  match Ok(41) {
+    Ok(value) -> value.add(1)
+    Err(_) -> 0
+  }
+}
+"#,
+            Target::Wasm32UnknownUnknown,
+        )
+        .unwrap();
+        let wasm = emit_wasm_artifact(&program).unwrap();
+        assert!(wasm.contains("(if (result i32)"));
+        assert!(wasm.contains("i64.const 4294967295"));
+        assert!(wasm.contains("i64.and"));
+        assert!(wasm.contains("i32.wrap_i64"));
+    }
+
+    #[test]
+    fn wasm_backend_custom_enum_struct_payload() {
+        let (program, _typed) = compile_source_for_target(
+            r#"
+struct Error {
+  code: I32
+}
+
+enum Checked {
+  Good(I32)
+  Bad(Error)
+}
+
+fn check(value: I32) -> Checked {
+  match value == 0 {
+    true -> Bad(Error { code: 7 })
+    false -> Good(value)
+  }
+}
+
+fn main() -> I32 {
+  match check(0) {
+    Good(v) -> v
+    Bad(error) -> error.code
+  }
+}
+"#,
+            Target::Wasm32UnknownUnknown,
+        )
+        .unwrap();
+        let wasm = emit_wasm_artifact(&program).unwrap();
+        assert!(wasm.contains("(module"));
+        assert!(wasm.contains("(func $check"));
+        assert!(wasm.contains("(func $main"));
+        assert!(wasm.contains("(export \"check\" (func $check)"));
+        assert!(wasm.contains("(export \"main\" (func $main)"));
+        assert!(wasm.contains("i64.extend_i32_u"));
+        assert!(wasm.contains("i64.const 32"));
+        assert!(wasm.contains("i64.shl"));
+        assert!(wasm.contains("i64.or"));
+        assert!(wasm.contains("i64.const 4294967295"));
+        assert!(wasm.contains("i64.and"));
+        assert!(wasm.contains("i32.wrap_i64"));
+        assert!(wasm.contains("i64.shr_u"));
+    }
+
+    #[test]
+    fn wasm_backend_rejects_function_values() {
+        let error = compile_source_for_target(
+            r#"
+fn main() -> I32 {
+  add(1, 2)
+}
+"#,
+            Target::Wasm32UnknownUnknown,
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("Unknown function"));
+    }
+
+    #[test]
+    fn wasm_backend_rejects_anonymous_functions() {
+        let (program, _typed) = compile_source(
+            r#"
+fn main() -> I32 {
+  f: fn(I32) -> I32 = fn(value: I32) -> value + 1
+  0
+}
+"#,
+        )
+        .unwrap();
+        let error = emit_wasm_artifact(&program).unwrap_err();
+        assert!(error.to_string().contains("anonymous function"));
+    }
+
+    #[test]
+    fn wasi_backend_parse_and_compile() {
+        let backend = Backend::parse("wasm-wasi").unwrap();
+        assert!(matches!(backend.target(), Some(Target::Wasm32Wasi)));
+        let platform = backend.platform();
+        assert_eq!(platform.name, "wasm32-wasi");
+    }
+
+    #[test]
+    fn wasi_backend_emits_module_header() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) =
+            compile_source_for_target("fn main() -> Unit { () }", Target::Wasm32Wasi).unwrap();
+        let wat = emit_wasi_artifact(&program, &platform).unwrap();
+        assert!(wat.contains("(module"));
+        assert!(wat.contains("(memory (export \"memory\") 2)"));
+        assert!(wat.contains("(export \"_start\" (func $_start))"));
+    }
+
+    #[test]
+    fn wasi_backend_emits_fd_write_stdout() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) = compile_source_for_target(
+            r#"
+import std.io.write_stdout_utf8!
+
+fn main!() -> Result<Unit, PlatformError> {
+  write_stdout_utf8!("hello")
+}
+"#,
+            Target::Wasm32Wasi,
+        )
+        .unwrap();
+        let wat = emit_wasi_artifact(&program, &platform).unwrap();
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"fd_write\""));
+        assert!(wat.contains("$emela_write_stdout_utf8"));
+        assert!(wat.contains("$emela_strlen"));
+    }
+
+    #[test]
+    fn wasi_backend_emits_fd_write_stderr() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) = compile_source_for_target(
+            r#"
+import std.io.write_stderr_utf8!
+
+fn main!() -> Result<Unit, PlatformError> {
+  write_stderr_utf8!("error")
+}
+"#,
+            Target::Wasm32Wasi,
+        )
+        .unwrap();
+        let wat = emit_wasi_artifact(&program, &platform).unwrap();
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"fd_write\""));
+        assert!(wat.contains("$emela_write_stderr_utf8"));
+    }
+
+    #[test]
+    fn wasi_backend_emits_fd_read_stdin() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) = compile_source_for_target(
+            r#"
+import std.io.read_stdin_utf8!
+
+fn main!() -> Result<String, PlatformError> {
+  read_stdin_utf8!()
+}
+"#,
+            Target::Wasm32Wasi,
+        )
+        .unwrap();
+        let wat = emit_wasi_artifact(&program, &platform).unwrap();
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"fd_read\""));
+        assert!(wat.contains("$emela_read_stdin_utf8"));
+    }
+
+    #[test]
+    fn wasi_backend_emits_clock_time_get() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) = compile_source_for_target(
+            r#"
+import std.clock.now_i32!
+
+fn main!() -> I32 {
+  now_i32!()
+}
+"#,
+            Target::Wasm32Wasi,
+        )
+        .unwrap();
+        let wat = emit_wasi_artifact(&program, &platform).unwrap();
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"clock_time_get\""));
+        assert!(wat.contains("$emela_now_i32"));
+    }
+
+    #[test]
+    fn wasi_backend_emits_random_get() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) = compile_source_for_target(
+            r#"
+import std.random.random_i32!
+
+fn main!() -> I32 {
+  random_i32!()
+}
+"#,
+            Target::Wasm32Wasi,
+        )
+        .unwrap();
+        let wat = emit_wasi_artifact(&program, &platform).unwrap();
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"random_get\""));
+        assert!(wat.contains("$emela_random_i32"));
+    }
+
+    #[test]
+    fn wasi_backend_emits_path_open_read() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) = compile_source_for_target(
+            r#"
+import std.fs.read_file_utf8!
+
+fn main!() -> Result<String, PlatformError> {
+  read_file_utf8!("test.txt")
+}
+"#,
+            Target::Wasm32Wasi,
+        )
+        .unwrap();
+        let wat = emit_wasi_artifact(&program, &platform).unwrap();
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"path_open\""));
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"fd_read\""));
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"fd_close\""));
+        assert!(wat.contains("$emela_read_file_utf8"));
+    }
+
+    #[test]
+    fn wasi_backend_emits_path_open_write() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) = compile_source_for_target(
+            r#"
+import std.fs.write_file_utf8!
+
+fn main!() -> Result<Unit, PlatformError> {
+  write_file_utf8!("test.txt", "content")
+}
+"#,
+            Target::Wasm32Wasi,
+        )
+        .unwrap();
+        let wat = emit_wasi_artifact(&program, &platform).unwrap();
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"path_open\""));
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"fd_write\""));
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"fd_close\""));
+        assert!(wat.contains("$emela_write_file_utf8"));
+    }
+
+    #[test]
+    fn wasi_backend_emits_environ_get() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) = compile_source_for_target(
+            r#"
+import std.env.get_env!
+
+fn main!() -> Result<String, PlatformError> {
+  get_env!("HOME")
+}
+"#,
+            Target::Wasm32Wasi,
+        )
+        .unwrap();
+        let wat = emit_wasi_artifact(&program, &platform).unwrap();
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"environ_sizes_get\""));
+        assert!(wat.contains("(import \"wasi_snapshot_preview1\" \"environ_get\""));
+        assert!(wat.contains("$emela_get_env"));
+    }
+
+    #[test]
+    fn wasi_backend_library_mode_has_no_start() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) = compile_source_for_platform_with_mode(
+            r#"
+fn add(x: I32, y: I32) -> I32 {
+  x.add(y)
+}
+"#,
+            &platform,
+            CheckMode::Library,
+        )
+        .unwrap();
+        let wat = emit_wasi_library_artifact(&program, &platform).unwrap();
+        assert!(!wat.contains("$_start"));
+        assert!(wat.contains("(func $add"));
+    }
+
+    #[test]
+    fn wasi_backend_emits_start_entrypoint() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) =
+            compile_source_for_target("fn main() -> I32 { 42 }", Target::Wasm32Wasi).unwrap();
+        let wat = emit_wasi_artifact(&program, &platform).unwrap();
+        assert!(wat.contains("$_start"));
+        assert!(wat.contains("call $main"));
+        assert!(wat.contains("$wasi_proc_exit"));
+    }
+
+    #[test]
+    fn wasi_backend_stdlib_wrapper_matches_result() {
+        let (_, typed) = compile_source_for_target(
+            r#"
+import std.io.write_stdout_utf8!
+
+fn main!() -> I32 {
+  match write_stdout_utf8!("hello") {
+    Ok(_) -> 0
+    Err(_) -> 1
+  }
+}
+"#,
+            Target::Wasm32Wasi,
+        )
+        .unwrap();
+        let main = typed.functions.iter().find(|f| f.name == "main!").unwrap();
+        assert_eq!(main.ret, Type::Prim(PrimType::I32));
+        assert!(main.capabilities.contains(&Capability::Stdout));
+    }
+
+    #[test]
+    fn wasi_backend_no_externs_emits_basic_module() {
+        let platform = PlatformSpec::wasi();
+        let (program, _typed) =
+            compile_source_for_target("fn main() -> I32 { 42 }", Target::Wasm32Wasi).unwrap();
+        let wat = emit_wasi_artifact(&program, &platform).unwrap();
+        assert!(wat.contains("(module"));
+        assert!(wat.contains("(memory (export \"memory\") 2)"));
+        assert!(wat.contains("(export \"_start\" (func $_start))"));
     }
 
     #[test]

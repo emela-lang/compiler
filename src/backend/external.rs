@@ -49,6 +49,7 @@ struct ManifestExternalFunction {
 struct ManifestBindings {
     js: Option<ManifestJsBinding>,
     native: Option<ManifestNativeBinding>,
+    wasm: Option<ManifestWasmBinding>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +62,15 @@ struct ManifestNativeBinding {
     symbol: String,
     #[serde(default, rename = "link")]
     links: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManifestWasmBinding {
+    module: String,
+    symbol: String,
+    params: Vec<String>,
+    #[serde(default)]
+    result: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -252,6 +262,16 @@ impl ManifestExternalFunction {
                         links: binding.links.clone(),
                     }
                 }),
+                wasm: self
+                    .bindings
+                    .wasm
+                    .as_ref()
+                    .map(|binding| crate::external::WasmBinding {
+                        module: binding.module.clone(),
+                        symbol: binding.symbol.clone(),
+                        params: binding.params.clone(),
+                        result: binding.result.clone(),
+                    }),
             },
         })
     }

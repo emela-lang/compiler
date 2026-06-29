@@ -986,7 +986,7 @@ impl<'a> JsEmitter<'a> {
             .ok_or_else(|| Error::new("internal js lowering error: missing main"))?;
         out.push_str(&format!(
             "const __emela_result = {}();\n",
-            js_name(&entry.name)
+            sanitize_ident(&entry.name)
         ));
         out.push_str("if (typeof process !== \"undefined\" && process.exitCode === undefined) {\n");
         out.push_str(
@@ -1034,10 +1034,13 @@ impl<'a> JsEmitter<'a> {
         let params = function
             .params
             .iter()
-            .map(|param| js_name(&param.name))
+            .map(|param| sanitize_ident(&param.name))
             .collect::<Vec<_>>()
             .join(", ");
-        out.push_str(&format!("function {}({params}) ", js_name(&function.name)));
+        out.push_str(&format!(
+            "function {}({params}) ",
+            sanitize_ident(&function.name)
+        ));
         self.emit_block_body(&function.body, out, 0)
     }
 
@@ -1053,7 +1056,11 @@ impl<'a> JsEmitter<'a> {
             match item {
                 BlockItem::Binding { name, expr, .. } => {
                     let expr = self.emit_expr(expr)?;
-                    self.line(out, indent + 1, &format!("let {} = {expr};", js_name(name)));
+                    self.line(
+                        out,
+                        indent + 1,
+                        &format!("let {} = {expr};", sanitize_ident(name)),
+                    );
                 }
                 BlockItem::Expr(expr) if is_last => {
                     let expr = self.emit_expr(expr)?;
@@ -1084,7 +1091,7 @@ impl<'a> JsEmitter<'a> {
                     return Ok(format!("{{ tag: {tag}, value: undefined }}"));
                 }
                 if self.find_program_function(name) {
-                    return Ok(js_name(name));
+                    return Ok(sanitize_ident(name));
                 }
                 if let Some(function) = self.find_external_function(name) {
                     let callee = function.bindings.js_symbol.as_ref().ok_or_else(|| {
@@ -1096,7 +1103,7 @@ impl<'a> JsEmitter<'a> {
                     })?;
                     return Ok(callee.clone());
                 }
-                Ok(js_name(name))
+                Ok(sanitize_ident(name))
             }
             Expr::Call { name, args, .. } => self.emit_call(name, args),
             Expr::MethodCall {
@@ -1110,11 +1117,11 @@ impl<'a> JsEmitter<'a> {
             } => Ok(format!(
                 "({}).{}",
                 self.emit_expr(receiver)?,
-                js_name(field)
+                sanitize_ident(field)
             )),
             Expr::StructLiteral { field, value, .. } => Ok(format!(
                 "{{ {}: {} }}",
-                js_name(field),
+                sanitize_ident(field),
                 self.emit_expr(value)?
             )),
             Expr::Binary {
@@ -1126,7 +1133,7 @@ impl<'a> JsEmitter<'a> {
             Expr::Lambda { params, body, .. } => {
                 let params = params
                     .iter()
-                    .map(|param| js_name(&param.name))
+                    .map(|param| sanitize_ident(&param.name))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let body = self.emit_expr(body)?;
@@ -1161,7 +1168,7 @@ impl<'a> JsEmitter<'a> {
             })?;
             return Ok(format!("{callee}({args})"));
         }
-        Ok(format!("{}({args})", js_name(name)))
+        Ok(format!("{}({args})", sanitize_ident(name)))
     }
 
     fn emit_method_call(&mut self, receiver: &Expr, name: &str, args: &[Expr]) -> Result<String> {
@@ -1227,7 +1234,11 @@ impl<'a> JsEmitter<'a> {
     ) -> Result<()> {
         match pattern {
             Pattern::Var(name) => {
-                self.line(out, indent, &format!("const {} = {value};", js_name(name)));
+                self.line(
+                    out,
+                    indent,
+                    &format!("const {} = {value};", sanitize_ident(name)),
+                );
             }
             Pattern::Variant {
                 payload: Some(payload),
@@ -1294,7 +1305,7 @@ impl<'a> JsEmitter<'a> {
     }
 }
 
-fn js_name(name: &str) -> String {
+fn sanitize_ident(name: &str) -> String {
     let mut out = String::new();
     for (index, ch) in name.chars().enumerate() {
         let valid = ch == '_' || ch == '$' || ch.is_ascii_alphanumeric();
@@ -1307,6 +1318,939 @@ fn js_name(name: &str) -> String {
         }
     }
     out
+}
+
+pub(crate) fn emit_wasm(program: &Program) -> Result<String> {
+    let emitter = WasmEmitter::new(program, WasmMode::Standalone, None, false);
+    emitter.emit_program()
+}
+
+pub(crate) fn emit_wasm_library(program: &Program) -> Result<String> {
+    let emitter = WasmEmitter::new(program, WasmMode::Standalone, None, true);
+    emitter.emit_program()
+}
+
+pub(crate) fn emit_wasi(program: &Program, platform: &PlatformSpec) -> Result<String> {
+    let emitter = WasmEmitter::new(program, WasmMode::Wasi, Some(platform), false);
+    emitter.emit_program()
+}
+
+pub(crate) fn emit_wasi_library(program: &Program, platform: &PlatformSpec) -> Result<String> {
+    let emitter = WasmEmitter::new(program, WasmMode::Wasi, Some(platform), true);
+    emitter.emit_program()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WasmMode {
+    Standalone,
+    Wasi,
+}
+
+struct WasmEmitter<'a> {
+    program: &'a Program,
+    mode: WasmMode,
+    platform: Option<&'a PlatformSpec>,
+    is_library: bool,
+    string_offsets: HashMap<String, i32>,
+    string_data: Vec<u8>,
+}
+
+impl<'a> WasmEmitter<'a> {
+    fn new(
+        program: &'a Program,
+        mode: WasmMode,
+        platform: Option<&'a PlatformSpec>,
+        is_library: bool,
+    ) -> Self {
+        let (string_offsets, string_data) = collect_string_data(program);
+        Self {
+            program,
+            mode,
+            platform,
+            is_library,
+            string_offsets,
+            string_data,
+        }
+    }
+
+    fn emit_program(&self) -> Result<String> {
+        let mut out = String::new();
+        wat_line(&mut out, 0, ";; Generated by the Emela compiler.");
+        out.push_str("(module\n");
+
+        if self.mode == WasmMode::Wasi && self.string_data.len() > 0x1000 {
+            return Err(Error::new(format!(
+                "wasi backend string data ({} bytes) exceeds 4KB limit; would overlap I/O workspace at 0x1000",
+                self.string_data.len()
+            )));
+        }
+
+        self.emit_wasi_imports(&mut out)?;
+
+        let has_data = !self.string_data.is_empty();
+        let needs_memory = has_data || self.mode == WasmMode::Wasi;
+        if needs_memory {
+            if self.mode == WasmMode::Wasi {
+                wat_line(&mut out, 1, "(memory (export \"memory\") 2)");
+            } else {
+                wat_line(&mut out, 1, "(memory 1)");
+            }
+        }
+
+        if !self.string_data.is_empty() {
+            out.push_str("  (data (i32.const 0) \"");
+            for &byte in &self.string_data {
+                match byte {
+                    b'\\' => out.push_str("\\\\"),
+                    b'\"' => out.push_str("\\\""),
+                    b'\n' => out.push_str("\\n"),
+                    b'\t' => out.push_str("\\t"),
+                    b'\r' => out.push_str("\\r"),
+                    0x20..=0x7E => out.push(byte as char),
+                    _ => out.push_str(&format!("\\{:02x}", byte)),
+                }
+            }
+            out.push_str("\")\n\n");
+        } else if self.mode == WasmMode::Wasi {
+            out.push('\n');
+        }
+
+        self.emit_glue_helpers(&mut out)?;
+
+        for function in self.program.functions() {
+            self.emit_function(function, &mut out)?;
+        }
+
+        for function in self.program.functions() {
+            let name = sanitize_ident(&function.name);
+            wat_line(
+                &mut out,
+                1,
+                &format!("(export \"{}\" (func ${name}))", function.name),
+            );
+        }
+
+        if self.mode == WasmMode::Wasi && !self.is_library {
+            self.emit_wasi_start(&mut out);
+        }
+
+        out.push_str(")\n");
+        Ok(out)
+    }
+
+    fn emit_function(&self, function: &Function, out: &mut String) -> Result<()> {
+        let locals = collect_wasm_locals(function);
+        let param_count = function.params.len();
+        let name = sanitize_ident(&function.name);
+        let result_type = wasm_result_type(&function.return_annotation, self.program);
+
+        out.push_str("  (func $");
+        out.push_str(&name);
+        for param in &function.params {
+            out.push_str(&format!(" (param ${} i32)", sanitize_ident(&param.name)));
+        }
+        out.push_str(&format!(" (result {result_type})\n"));
+
+        for local in locals.iter().skip(param_count) {
+            wat_line(out, 2, &format!("(local ${} i32)", sanitize_ident(local)));
+        }
+
+        let return_unit = matches!(function.return_annotation, Some(Type::Prim(PrimType::Unit)));
+
+        self.emit_block_body(&function.body, &locals, out, 2, return_unit, result_type)?;
+
+        out.push_str("  )\n\n");
+        Ok(())
+    }
+
+    fn emit_block_body(
+        &self,
+        block: &Block,
+        locals: &[String],
+        out: &mut String,
+        indent: usize,
+        return_unit: bool,
+        result_type: &str,
+    ) -> Result<()> {
+        if block.items.is_empty() {
+            wat_line(out, indent, &format!("{result_type}.const 0"));
+            return Ok(());
+        }
+
+        let last_idx = block.items.len() - 1;
+        for (index, item) in block.items.iter().enumerate() {
+            let is_last = index == last_idx;
+            match item {
+                BlockItem::Binding { name, expr, .. } => {
+                    self.emit_expr(expr, locals, out, indent)?;
+                    wat_line(out, indent, &format!("local.set ${}", sanitize_ident(name)));
+                }
+                BlockItem::Expr(expr) => {
+                    self.emit_expr(expr, locals, out, indent)?;
+                    if !is_last {
+                        wat_line(out, indent, "drop");
+                    } else if return_unit {
+                        wat_line(out, indent, "drop");
+                        wat_line(out, indent, "i32.const 0");
+                    }
+                }
+            }
+        }
+
+        if !matches!(block.items.last(), Some(BlockItem::Expr(_))) {
+            wat_line(out, indent, &format!("{result_type}.const 0"));
+        }
+        Ok(())
+    }
+
+    fn emit_expr(
+        &self,
+        expr: &Expr,
+        locals: &[String],
+        out: &mut String,
+        indent: usize,
+    ) -> Result<()> {
+        match expr {
+            Expr::Int(value, _) => {
+                wat_line(out, indent, &format!("i32.const {}", *value as u32));
+                Ok(())
+            }
+            Expr::Bool(value, _) => {
+                wat_line(
+                    out,
+                    indent,
+                    if *value { "i32.const 1" } else { "i32.const 0" },
+                );
+                Ok(())
+            }
+            Expr::String(value, _) => {
+                let offset = self.string_offsets.get(value).copied().unwrap_or(0);
+                wat_line(out, indent, &format!("i32.const {offset}"));
+                Ok(())
+            }
+            Expr::Unit(_) => {
+                wat_line(out, indent, "i32.const 0");
+                Ok(())
+            }
+            Expr::Var(name, _) => {
+                if let Some(tag) = self.find_variant_tag(name) {
+                    self.push_unit_payload(out, indent);
+                    self.pack_enum(tag as u32, "i32", out, indent);
+                    return Ok(());
+                }
+                if self.find_program_function(name) || self.find_external_function(name).is_some() {
+                    return Err(Error::new(format!(
+                        "wasm backend does not support function value `{name}` yet"
+                    )));
+                }
+                let idx = local_index(locals, name)?;
+                wat_line(out, indent, &format!("local.get {}", idx));
+                Ok(())
+            }
+            Expr::Call { name, args, .. } => self.emit_call(name, args, locals, out, indent),
+            Expr::MethodCall {
+                receiver,
+                name,
+                args,
+                ..
+            } => self.emit_method_call(receiver, name, args, locals, out, indent),
+            Expr::FieldAccess { receiver, .. } => self.emit_expr(receiver, locals, out, indent),
+            Expr::StructLiteral { value, .. } => self.emit_expr(value, locals, out, indent),
+            Expr::Binary {
+                op, left, right, ..
+            } => self.emit_binary(*op, left, right, locals, out, indent),
+            Expr::Match {
+                scrutinee, arms, ..
+            } => self.emit_match(scrutinee, arms, locals, out, indent),
+            Expr::Lambda { .. } => Err(Error::new(
+                "wasm backend does not support anonymous functions yet",
+            )),
+            Expr::Block(block, _) => {
+                let result_type = expression_natural_type(expr, self.program);
+                self.emit_block_body(block, locals, out, indent, false, result_type)
+            }
+        }
+    }
+
+    fn emit_call(
+        &self,
+        name: &str,
+        args: &[Expr],
+        locals: &[String],
+        out: &mut String,
+        indent: usize,
+    ) -> Result<()> {
+        if let Some(tag) = self.find_variant_tag(name) {
+            if args.len() != 1 {
+                return Err(Error::new(format!(
+                    "wasm backend expects enum variant `{name}` to have one payload"
+                )));
+            }
+            self.emit_expr(&args[0], locals, out, indent)?;
+            let payload_type = expression_natural_type(&args[0], self.program);
+            self.pack_enum(tag as u32, payload_type, out, indent);
+            return Ok(());
+        }
+
+        if self.find_external_function(name).is_some() {
+            match self.mode {
+                WasmMode::Wasi => {
+                    for arg in args {
+                        self.emit_expr(arg, locals, out, indent)?;
+                    }
+                    let glue_name = wasi_glue_name(name);
+                    wat_line(out, indent, &format!("call ${glue_name}"));
+                    return Ok(());
+                }
+                WasmMode::Standalone => {
+                    return Err(Error::new(format!(
+                        "wasm backend does not support external function calls (no capabilities for wasm32-unknown-unknown)"
+                    )));
+                }
+            }
+        }
+
+        if !self.find_program_function(name) {
+            return Err(Error::new(format!(
+                "wasm backend does not support calling function value `{name}` yet"
+            )));
+        }
+
+        for arg in args {
+            self.emit_expr(arg, locals, out, indent)?;
+        }
+        let callee = sanitize_ident(name);
+        wat_line(out, indent, &format!("call ${callee}"));
+        Ok(())
+    }
+
+    fn emit_method_call(
+        &self,
+        receiver: &Expr,
+        name: &str,
+        args: &[Expr],
+        locals: &[String],
+        out: &mut String,
+        indent: usize,
+    ) -> Result<()> {
+        if args.len() != 1 {
+            return Err(Error::new(format!(
+                "wasm backend only supports unary primitive method `{name}`"
+            )));
+        }
+        self.emit_binary(method_op(name)?, receiver, &args[0], locals, out, indent)
+    }
+
+    fn emit_binary(
+        &self,
+        op: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        locals: &[String],
+        out: &mut String,
+        indent: usize,
+    ) -> Result<()> {
+        self.emit_expr(left, locals, out, indent)?;
+        self.emit_expr(right, locals, out, indent)?;
+        match op {
+            BinaryOp::Add => wat_line(out, indent, "i32.add"),
+            BinaryOp::Sub => wat_line(out, indent, "i32.sub"),
+            BinaryOp::Mul => wat_line(out, indent, "i32.mul"),
+            BinaryOp::Eq => wat_line(out, indent, "i32.eq"),
+            BinaryOp::Lt => wat_line(out, indent, "i32.lt_s"),
+        }
+        Ok(())
+    }
+
+    fn emit_match(
+        &self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        locals: &[String],
+        out: &mut String,
+        indent: usize,
+    ) -> Result<()> {
+        if arms.is_empty() {
+            wat_line(out, indent, "i32.const 0");
+            return Ok(());
+        }
+        self.emit_match_chain(scrutinee, arms, 0, locals, out, indent)
+    }
+
+    fn emit_match_chain(
+        &self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        arm_idx: usize,
+        locals: &[String],
+        out: &mut String,
+        indent: usize,
+    ) -> Result<()> {
+        if arm_idx >= arms.len() {
+            let fallback_type = expression_natural_type(&arms[0].expr, self.program);
+            wat_line(out, indent, &format!("{fallback_type}.const 0"));
+            return Ok(());
+        }
+
+        let arm = &arms[arm_idx];
+        let is_wildcard = matches!(&arm.pattern, Pattern::Wildcard | Pattern::Var(_));
+
+        if is_wildcard {
+            self.emit_match_arm_body(scrutinee, arm, locals, out, indent)?;
+            return Ok(());
+        }
+
+        let arm_result_type = expression_natural_type(&arm.expr, self.program);
+        self.emit_match_condition(scrutinee, &arm.pattern, locals, out, indent)?;
+        wat_line(out, indent, &format!("(if (result {arm_result_type})"));
+        wat_line(out, indent + 1, "(then");
+        self.emit_match_arm_body(scrutinee, arm, locals, out, indent + 2)?;
+        wat_line(out, indent + 1, ")");
+        wat_line(out, indent + 1, "(else");
+        self.emit_match_chain(scrutinee, arms, arm_idx + 1, locals, out, indent + 2)?;
+        wat_line(out, indent + 1, ")");
+        wat_line(out, indent, ")");
+        Ok(())
+    }
+
+    fn emit_match_condition(
+        &self,
+        scrutinee: &Expr,
+        pattern: &Pattern,
+        locals: &[String],
+        out: &mut String,
+        indent: usize,
+    ) -> Result<()> {
+        match pattern {
+            Pattern::Int(value) => {
+                self.emit_expr(scrutinee, locals, out, indent)?;
+                wat_line(out, indent, &format!("i32.const {}", *value as u32));
+                wat_line(out, indent, "i32.eq");
+            }
+            Pattern::Bool(value) => {
+                self.emit_expr(scrutinee, locals, out, indent)?;
+                wat_line(
+                    out,
+                    indent,
+                    if *value { "i32.const 1" } else { "i32.const 0" },
+                );
+                wat_line(out, indent, "i32.eq");
+            }
+            Pattern::Unit => {
+                self.emit_expr(scrutinee, locals, out, indent)?;
+                wat_line(out, indent, "i32.const 0");
+                wat_line(out, indent, "i32.eq");
+            }
+            Pattern::Variant { name, .. } => {
+                let tag = self.variant_tag(name)? as u32;
+                self.emit_expr(scrutinee, locals, out, indent)?;
+                wat_line(out, indent, "i64.const 4294967295");
+                wat_line(out, indent, "i64.and");
+                wat_line(out, indent, "i32.wrap_i64");
+                wat_line(out, indent, &format!("i32.const {}", tag));
+                wat_line(out, indent, "i32.eq");
+            }
+            Pattern::Var(_) | Pattern::Wildcard => {
+                wat_line(out, indent, "i32.const 1");
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_match_arm_body(
+        &self,
+        scrutinee: &Expr,
+        arm: &MatchArm,
+        locals: &[String],
+        out: &mut String,
+        indent: usize,
+    ) -> Result<()> {
+        self.emit_pattern_bindings(scrutinee, &arm.pattern, locals, out, indent)?;
+        self.emit_expr(&arm.expr, locals, out, indent)
+    }
+
+    fn emit_pattern_bindings(
+        &self,
+        scrutinee: &Expr,
+        pattern: &Pattern,
+        locals: &[String],
+        out: &mut String,
+        indent: usize,
+    ) -> Result<()> {
+        match pattern {
+            Pattern::Var(name) => {
+                self.emit_expr(scrutinee, locals, out, indent)?;
+                let idx = local_index(locals, name)?;
+                wat_line(out, indent, &format!("local.set {}", idx));
+            }
+            Pattern::Variant {
+                payload: Some(payload),
+                ..
+            } => {
+                self.emit_expr(scrutinee, locals, out, indent)?;
+                wat_line(out, indent, "i64.const 32");
+                wat_line(out, indent, "i64.shr_u");
+                wat_line(out, indent, "i32.wrap_i64");
+                let synthetic = Pattern::Wildcard;
+                self.emit_pattern_bindings_sub(&synthetic, payload, locals, out, indent)?;
+            }
+            Pattern::Int(_)
+            | Pattern::Bool(_)
+            | Pattern::Unit
+            | Pattern::Wildcard
+            | Pattern::Variant { payload: None, .. } => {}
+        }
+        Ok(())
+    }
+
+    fn emit_pattern_bindings_sub(
+        &self,
+        _parent: &Pattern,
+        payload: &Pattern,
+        locals: &[String],
+        out: &mut String,
+        indent: usize,
+    ) -> Result<()> {
+        match payload {
+            Pattern::Var(name) => {
+                let idx = local_index(locals, name)?;
+                wat_line(out, indent, &format!("local.set {}", idx));
+            }
+            Pattern::Variant {
+                payload: Some(inner),
+                ..
+            } => {
+                wat_line(out, indent, "i64.const 32");
+                wat_line(out, indent, "i64.shr_u");
+                wat_line(out, indent, "i32.wrap_i64");
+                self.emit_pattern_bindings_sub(payload, inner, locals, out, indent)?;
+            }
+            Pattern::Wildcard => {
+                wat_line(out, indent, "drop");
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn find_variant_tag(&self, name: &str) -> Option<usize> {
+        self.program
+            .items
+            .iter()
+            .find_map(|item| {
+                let TopLevelItem::Enum(decl) = item else {
+                    return None;
+                };
+                decl.variants
+                    .iter()
+                    .position(|variant| variant.name == name)
+            })
+            .or_else(|| builtin_variant_tag(name))
+    }
+
+    fn find_external_function(&self, name: &str) -> Option<&ExternalFunction> {
+        match self.mode {
+            WasmMode::Standalone => None,
+            WasmMode::Wasi => {
+                let platform = self.platform?;
+                self.program.items.iter().find_map(|item| {
+                    let TopLevelItem::Import(import) = item else {
+                        return None;
+                    };
+                    if import.name == name {
+                        platform.externs.resolve_import(&import.path, &import.name)
+                    } else {
+                        None
+                    }
+                })
+            }
+        }
+    }
+
+    fn find_program_function(&self, name: &str) -> bool {
+        self.program
+            .functions()
+            .iter()
+            .any(|function| function.name == name)
+    }
+
+    fn variant_tag(&self, name: &str) -> Result<usize> {
+        self.find_variant_tag(name).ok_or_else(|| {
+            Error::new(format!(
+                "internal wasm lowering error: unknown variant `{name}`"
+            ))
+        })
+    }
+
+    fn pack_enum(&self, tag: u32, payload_type: &str, out: &mut String, indent: usize) {
+        // pack: (payload << 32) | tag
+        // Caller is responsible for pushing the payload on the stack first;
+        // use push_unit_payload to push a zero payload for unit variants.
+        // payload_type indicates whether the stack value is "i32" or "i64" (nested enum).
+        if payload_type == "i64" {
+            wat_line(out, indent, "i64.const 32");
+            wat_line(out, indent, "i64.shl");
+        } else {
+            wat_line(out, indent, "i64.extend_i32_u");
+            wat_line(out, indent, "i64.const 32");
+            wat_line(out, indent, "i64.shl");
+        }
+        wat_line(out, indent, &format!("i64.const {}", tag));
+        wat_line(out, indent, "i64.or");
+    }
+
+    fn push_unit_payload(&self, out: &mut String, indent: usize) {
+        wat_line(out, indent, "i32.const 0");
+    }
+
+    fn emit_wasi_imports(&self, out: &mut String) -> Result<()> {
+        if self.mode != WasmMode::Wasi {
+            return Ok(());
+        }
+        for import_name in [
+            "fd_write",
+            "fd_read",
+            "clock_time_get",
+            "random_get",
+            "path_open",
+            "fd_close",
+            "environ_sizes_get",
+            "environ_get",
+            "proc_exit",
+        ]
+        .iter()
+        {
+            if *import_name == "proc_exit" && self.is_library {
+                continue;
+            }
+            let (params_str, result_str) = wasi_import_sig(import_name);
+            wat_line(
+                out,
+                1,
+                &format!(
+                    "(import \"wasi_snapshot_preview1\" \"{}\" (func ${} {}))",
+                    import_name,
+                    wasi_import_func_name(import_name),
+                    format_wasi_sig(params_str, result_str)
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    fn emit_glue_helpers(&self, out: &mut String) -> Result<()> {
+        if self.mode != WasmMode::Wasi {
+            return Ok(());
+        }
+        out.push_str(super::bundled::WASI_RUNTIME_WAT);
+        out.push_str("\n\n");
+        Ok(())
+    }
+
+    fn emit_wasi_start(&self, out: &mut String) {
+        out.push_str("  (func $_start\n");
+        let functions = self.program.functions();
+        let entry = functions
+            .iter()
+            .find(|f| f.name == "main" || f.name == "main!");
+        if let Some(main_func) = entry {
+            let name = sanitize_ident(&main_func.name);
+            wat_line(out, 2, &format!("call ${name}"));
+            wat_line(out, 2, "drop");
+        }
+        wat_line(out, 2, "i32.const 0");
+        wat_line(out, 2, "call $wasi_proc_exit");
+        out.push_str("  )\n\n");
+        wat_line(out, 1, "(export \"_start\" (func $_start))");
+    }
+}
+
+fn collect_string_data(program: &Program) -> (HashMap<String, i32>, Vec<u8>) {
+    let mut strings: Vec<String> = Vec::new();
+    for function in program.functions() {
+        collect_function_strings(function, &mut strings);
+    }
+    let mut offsets = HashMap::new();
+    let mut data = Vec::new();
+    let mut offset = 0i32;
+    for s in &strings {
+        offsets.insert(s.clone(), offset);
+        data.extend_from_slice(s.as_bytes());
+        data.push(0);
+        offset += s.len() as i32 + 1;
+    }
+    (offsets, data)
+}
+
+fn collect_function_strings(function: &Function, strings: &mut Vec<String>) {
+    collect_block_strings(&function.body, strings);
+}
+
+fn collect_block_strings(block: &Block, strings: &mut Vec<String>) {
+    for item in &block.items {
+        match item {
+            BlockItem::Binding { expr, .. } => collect_expr_strings(expr, strings),
+            BlockItem::Expr(expr) => collect_expr_strings(expr, strings),
+        }
+    }
+}
+
+fn collect_expr_strings(expr: &Expr, strings: &mut Vec<String>) {
+    match expr {
+        Expr::String(value, _) => {
+            if !strings.contains(value) {
+                strings.push(value.clone());
+            }
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_expr_strings(arg, strings);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_expr_strings(receiver, strings);
+            for arg in args {
+                collect_expr_strings(arg, strings);
+            }
+        }
+        Expr::FieldAccess { receiver, .. } => collect_expr_strings(receiver, strings),
+        Expr::StructLiteral { value, .. } => collect_expr_strings(value, strings),
+        Expr::Binary { left, right, .. } => {
+            collect_expr_strings(left, strings);
+            collect_expr_strings(right, strings);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_expr_strings(scrutinee, strings);
+            for arm in arms {
+                collect_expr_strings(&arm.expr, strings);
+            }
+        }
+        Expr::Lambda { body, .. } => collect_expr_strings(body, strings),
+        Expr::Block(block, _) => collect_block_strings(block, strings),
+        Expr::Int(_, _) | Expr::Bool(_, _) | Expr::Unit(_) | Expr::Var(_, _) => {}
+    }
+}
+
+fn collect_wasm_locals(function: &Function) -> Vec<String> {
+    let mut locals = Vec::new();
+    for param in &function.params {
+        locals.push(param.name.clone());
+    }
+    collect_block_wasm_locals(&function.body, &mut locals);
+    locals
+}
+
+fn collect_block_wasm_locals(block: &Block, locals: &mut Vec<String>) {
+    for item in &block.items {
+        match item {
+            BlockItem::Binding { name, expr, .. } => {
+                if !locals.contains(name) {
+                    locals.push(name.clone());
+                }
+                collect_expr_wasm_locals(expr, locals);
+            }
+            BlockItem::Expr(expr) => collect_expr_wasm_locals(expr, locals),
+        }
+    }
+}
+
+fn collect_expr_wasm_locals(expr: &Expr, locals: &mut Vec<String>) {
+    match expr {
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_expr_wasm_locals(arg, locals);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_expr_wasm_locals(receiver, locals);
+            for arg in args {
+                collect_expr_wasm_locals(arg, locals);
+            }
+        }
+        Expr::FieldAccess { receiver, .. } => collect_expr_wasm_locals(receiver, locals),
+        Expr::StructLiteral { value, .. } => collect_expr_wasm_locals(value, locals),
+        Expr::Binary { left, right, .. } => {
+            collect_expr_wasm_locals(left, locals);
+            collect_expr_wasm_locals(right, locals);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_expr_wasm_locals(scrutinee, locals);
+            for arm in arms {
+                collect_pattern_wasm_locals(&arm.pattern, locals);
+                collect_expr_wasm_locals(&arm.expr, locals);
+            }
+        }
+        Expr::Lambda { body, .. } => collect_expr_wasm_locals(body, locals),
+        Expr::Block(block, _) => collect_block_wasm_locals(block, locals),
+        Expr::Int(_, _)
+        | Expr::Bool(_, _)
+        | Expr::String(_, _)
+        | Expr::Unit(_)
+        | Expr::Var(_, _) => {}
+    }
+}
+
+fn collect_pattern_wasm_locals(pattern: &Pattern, locals: &mut Vec<String>) {
+    match pattern {
+        Pattern::Var(name) => {
+            if !locals.contains(name) {
+                locals.push(name.clone());
+            }
+        }
+        Pattern::Variant {
+            payload: Some(payload),
+            ..
+        } => collect_pattern_wasm_locals(payload, locals),
+        Pattern::Int(_)
+        | Pattern::Bool(_)
+        | Pattern::Unit
+        | Pattern::Wildcard
+        | Pattern::Variant { payload: None, .. } => {}
+    }
+}
+
+fn wasm_result_type(annotation: &Option<Type>, program: &Program) -> &'static str {
+    match annotation {
+        Some(Type::Named(name)) if is_enum_type(name, program) => "i64",
+        Some(Type::Apply { name, .. }) if is_enum_type(name, program) => "i64",
+        _ => "i32",
+    }
+}
+
+fn is_enum_type(name: &str, program: &Program) -> bool {
+    if builtin_enum_names().iter().any(|builtin| *builtin == name) {
+        return true;
+    }
+    program.items.iter().any(|item| {
+        let TopLevelItem::Enum(decl) = item else {
+            return false;
+        };
+        decl.name == name
+    })
+}
+
+fn builtin_enum_names() -> &'static [&'static str] {
+    &["Result", "PlatformError"]
+}
+
+fn expression_natural_type(expr: &Expr, program: &Program) -> &'static str {
+    match expr {
+        Expr::Var(name, _) => {
+            if program.items.iter().any(|item| {
+                let TopLevelItem::Enum(decl) = item else {
+                    return false;
+                };
+                decl.variants.iter().any(|v| v.name == *name)
+            }) || builtin_variant_tag(name).is_some()
+            {
+                "i64"
+            } else {
+                "i32"
+            }
+        }
+        Expr::Call { name, .. } => {
+            if program.items.iter().any(|item| {
+                let TopLevelItem::Enum(decl) = item else {
+                    return false;
+                };
+                decl.variants.iter().any(|v| v.name == *name)
+            }) || builtin_variant_tag(name).is_some()
+            {
+                "i64"
+            } else {
+                let func = program.items.iter().find_map(|item| {
+                    let TopLevelItem::Function(f) = item else {
+                        return None;
+                    };
+                    if f.name == *name {
+                        Some(f)
+                    } else {
+                        None
+                    }
+                });
+                match func {
+                    Some(f) => wasm_result_type(&f.return_annotation, program),
+                    None => "i32",
+                }
+            }
+        }
+        Expr::Match { arms, .. } => arms
+            .first()
+            .map(|arm| expression_natural_type(&arm.expr, program))
+            .unwrap_or("i32"),
+        Expr::Block(block, _) => block
+            .items
+            .last()
+            .map(|item| match item {
+                BlockItem::Binding { expr, .. } => expression_natural_type(expr, program),
+                BlockItem::Expr(expr) => expression_natural_type(expr, program),
+            })
+            .unwrap_or("i32"),
+        _ => "i32",
+    }
+}
+
+fn wat_line(out: &mut String, indent: usize, line: &str) {
+    for _ in 0..indent {
+        out.push_str("  ");
+    }
+    out.push_str(line);
+    out.push('\n');
+}
+
+fn local_index(locals: &[String], name: &str) -> Result<usize> {
+    locals
+        .iter()
+        .position(|local| local == name)
+        .ok_or_else(|| {
+            Error::new(format!(
+                "internal wasm lowering error: unknown local `{name}`"
+            ))
+        })
+}
+
+fn wasi_glue_name(external_name: &str) -> String {
+    match external_name {
+        "_write_stdout_utf8!" => "emela_write_stdout_utf8".to_string(),
+        "_write_stderr_utf8!" => "emela_write_stderr_utf8".to_string(),
+        "_read_stdin_utf8!" => "emela_read_stdin_utf8".to_string(),
+        "_now_i32!" => "emela_now_i32".to_string(),
+        "_random_i32!" => "emela_random_i32".to_string(),
+        "_read_file_utf8!" => "emela_read_file_utf8".to_string(),
+        "_write_file_utf8!" => "emela_write_file_utf8".to_string(),
+        "_get_env!" => "emela_get_env".to_string(),
+        _ => external_name.to_string(),
+    }
+}
+
+fn wasi_import_func_name(name: &str) -> String {
+    format!("wasi_{name}")
+}
+
+fn wasi_import_sig(name: &str) -> (&'static str, &'static str) {
+    match name {
+        "fd_write" => ("(param i32 i32 i32 i32)", "(result i32)"),
+        "fd_read" => ("(param i32 i32 i32 i32)", "(result i32)"),
+        "clock_time_get" => ("(param i32 i64 i32)", "(result i32)"),
+        "random_get" => ("(param i32 i32)", "(result i32)"),
+        "path_open" => (
+            "(param i32 i32 i32 i32 i32 i64 i64 i32 i32)",
+            "(result i32)",
+        ),
+        "fd_close" => ("(param i32)", "(result i32)"),
+        "environ_sizes_get" => ("(param i32 i32)", "(result i32)"),
+        "environ_get" => ("(param i32 i32)", "(result i32)"),
+        "proc_exit" => ("(param i32)", ""),
+        _ => ("", ""),
+    }
+}
+
+fn format_wasi_sig(params: &str, result: &str) -> String {
+    format!("{params} {result}")
 }
 
 fn native_backend(target: Target) -> Result<&'static dyn NativeBackend> {
