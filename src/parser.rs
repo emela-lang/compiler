@@ -73,11 +73,23 @@ impl Parser {
             "Unit" => Ok(Type::Unit),
             "Bool" => Ok(Type::Bool),
             "Int" => Ok(Type::Int),
+            "Float" => Ok(Type::Float),
             "String" => Ok(Type::String),
+            "Array" => {
+                self.expect(&TokenKind::Lt)?;
+                let element = self.parse_type()?;
+                self.expect(&TokenKind::Gt)?;
+                Ok(Type::Array(Box::new(element)))
+            }
+            "Record" => Ok(Type::Record),
+            "Enum" => Ok(Type::Enum),
+            "Function" => Ok(Type::Function),
             _ => Err(Error::diagnostic(
                 Diagnostic::new("Unknown type")
                     .label(span, format!("unknown type `{name}`"))
-                    .help("The minimal compiler currently supports Unit, Bool, Int, and String."),
+                    .help(
+                        "The minimal compiler currently supports Unit, Bool, Int, Float, String, Array<T>, Record, Enum, and Function.",
+                    ),
             )),
         }
     }
@@ -206,6 +218,10 @@ impl Parser {
                 let span = self.bump().span;
                 Ok(Expr::Int(value, span))
             }
+            TokenKind::Float(value) => {
+                let span = self.bump().span;
+                Ok(Expr::Float(value, span))
+            }
             TokenKind::String(value) => {
                 let span = self.bump().span;
                 Ok(Expr::String(value, span))
@@ -238,6 +254,18 @@ impl Parser {
                 } else {
                     Ok(Expr::Var(name, span))
                 }
+            }
+            TokenKind::LBracket => {
+                let start = self.bump().span;
+                let mut values = Vec::new();
+                if !self.at(&TokenKind::RBracket) {
+                    values.push(self.parse_expr()?);
+                    while self.eat(&TokenKind::Comma) {
+                        values.push(self.parse_expr()?);
+                    }
+                }
+                let end = self.expect(&TokenKind::RBracket)?.span;
+                Ok(Expr::Array(values, start.merge(&end)))
             }
             TokenKind::LBrace => Ok(Expr::Block(self.parse_block()?)),
             TokenKind::LParen => {

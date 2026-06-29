@@ -11,11 +11,14 @@ pub(crate) enum TokenKind {
     False,
     Ident(String),
     Int(i32),
+    Float(f64),
     String(String),
     LParen,
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     Comma,
     Colon,
     Eq,
@@ -74,6 +77,20 @@ fn lex_with_file(source: &str, file: Arc<SourceFile>) -> Result<Vec<Token>> {
             b')' => push(&mut tokens, TokenKind::RParen, file.clone(), start, &mut i),
             b'{' => push(&mut tokens, TokenKind::LBrace, file.clone(), start, &mut i),
             b'}' => push(&mut tokens, TokenKind::RBrace, file.clone(), start, &mut i),
+            b'[' => push(
+                &mut tokens,
+                TokenKind::LBracket,
+                file.clone(),
+                start,
+                &mut i,
+            ),
+            b']' => push(
+                &mut tokens,
+                TokenKind::RBracket,
+                file.clone(),
+                start,
+                &mut i,
+            ),
             b',' => push(&mut tokens, TokenKind::Comma, file.clone(), start, &mut i),
             b':' => push(&mut tokens, TokenKind::Colon, file.clone(), start, &mut i),
             b'=' => push(&mut tokens, TokenKind::Eq, file.clone(), start, &mut i),
@@ -88,6 +105,24 @@ fn lex_with_file(source: &str, file: Arc<SourceFile>) -> Result<Vec<Token>> {
                     i += 1;
                 }
                 let text = &source[start..i];
+                if i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
+                    i += 1;
+                    while i < bytes.len() && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                    let text = &source[start..i];
+                    let value = text.parse::<f64>().map_err(|_| {
+                        Error::diagnostic(
+                            Diagnostic::new("Float literal is invalid")
+                                .label(Span::new(file.clone(), start, i), "invalid Float literal"),
+                        )
+                    })?;
+                    tokens.push(Token {
+                        kind: TokenKind::Float(value),
+                        span: Span::new(file.clone(), start, i),
+                    });
+                    continue;
+                }
                 let value = text.parse::<i32>().map_err(|_| {
                     Error::diagnostic(
                         Diagnostic::new("Integer literal is too large")

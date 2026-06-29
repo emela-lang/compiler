@@ -40,8 +40,13 @@ pub(crate) fn emit(program: &IrProgram) -> String {
 fn emit_expr(expr: &IrExpr) -> String {
     match expr {
         IrExpr::Int(value) => value.to_string(),
+        IrExpr::Float(value) => value.to_string(),
         IrExpr::Bool(value) => value.to_string(),
         IrExpr::String(value) => format!("{value:?}"),
+        IrExpr::Array(values) => format!(
+            "[{}]",
+            values.iter().map(emit_expr).collect::<Vec<_>>().join(", ")
+        ),
         IrExpr::Unit => "undefined".to_string(),
         IrExpr::Var(name) => js_name(name),
         IrExpr::Let { name, value, next } => format!(
@@ -55,7 +60,9 @@ fn emit_expr(expr: &IrExpr) -> String {
             js_name(name),
             args.iter().map(emit_expr).collect::<Vec<_>>().join(", ")
         ),
-        IrExpr::Binary { op, left, right } => {
+        IrExpr::Binary {
+            op, left, right, ..
+        } => {
             let op = match op {
                 BinaryOp::Add => "+",
                 BinaryOp::Sub => "-",

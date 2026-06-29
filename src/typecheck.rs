@@ -199,12 +199,20 @@ impl Checker {
                                 .label(name_span.clone(), format!("`{name}` is already bound")),
                         ));
                     }
-                    let info = self.check_expr(value, &mut scope)?;
-                    if let Some(annotation) = ty {
+                    let info = match (value, ty) {
+                        (Expr::Array(elements, span), Some(Type::Array(element))) => {
+                            self.check_array(elements, span, &mut scope, Some(element))?
+                        }
+                        _ => self.check_expr(value, &mut scope)?,
+                    };
+                    let binding_ty = if let Some(annotation) = ty {
                         expect_type(&info.ty, annotation, info.span.clone())?;
-                    }
+                        annotation.clone()
+                    } else {
+                        info.ty
+                    };
                     effects.union(&info.effects);
-                    scope.insert(name.clone(), ty.clone().unwrap_or(info.ty));
+                    scope.insert(name.clone(), binding_ty);
                     last = ExprInfo {
                         ty: Type::Unit,
                         effects: EffectRow::default(),
@@ -224,8 +232,10 @@ impl Checker {
     fn check_expr(&self, expr: &Expr, scope: &mut HashMap<String, Type>) -> Result<ExprInfo> {
         match expr {
             Expr::Int(_, span) => Ok(info(Type::Int, span.clone())),
+            Expr::Float(_, span) => Ok(info(Type::Float, span.clone())),
             Expr::Bool(_, span) => Ok(info(Type::Bool, span.clone())),
             Expr::String(_, span) => Ok(info(Type::String, span.clone())),
+            Expr::Array(elements, span) => self.check_array(elements, span, scope, None),
             Expr::Unit(span) => Ok(info(Type::Unit, span.clone())),
             Expr::Var(name, span) => scope
                 .get(name)
@@ -280,17 +290,15 @@ impl Checker {
                 effects.union(&right.effects);
                 match op {
                     BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul => {
-                        expect_type(&left.ty, &Type::Int, left.span)?;
-                        expect_type(&right.ty, &Type::Int, right.span)?;
+                        let ty = expect_numeric_pair(&left, &right)?;
                         Ok(ExprInfo {
-                            ty: Type::Int,
+                            ty,
                             effects,
                             span: span.clone(),
                         })
                     }
                     BinaryOp::Eq | BinaryOp::Lt => {
-                        expect_type(&left.ty, &Type::Int, left.span)?;
-                        expect_type(&right.ty, &Type::Int, right.span)?;
+                        expect_comparable_numeric_pair(&left, &right)?;
                         Ok(ExprInfo {
                             ty: Type::Bool,
                             effects,
@@ -302,6 +310,36 @@ impl Checker {
             Expr::Block(block) => self.check_block(block, scope),
         }
     }
+
+    fn check_array(
+        &self,
+        elements: &[Expr],
+        span: &Span,
+        scope: &mut HashMap<String, Type>,
+        expected_element: Option<&Type>,
+    ) -> Result<ExprInfo> {
+        let mut effects = EffectRow::default();
+        let mut element_ty = expected_element.cloned();
+        for element in elements {
+            let actual = self.check_expr(element, scope)?;
+            effects.union(&actual.effects);
+            match &element_ty {
+                Some(expected) => expect_type(&actual.ty, expected, actual.span.clone())?,
+                None => element_ty = Some(actual.ty),
+            }
+        }
+        let Some(element_ty) = element_ty else {
+            return Err(Error::diagnostic(
+                Diagnostic::new("Cannot infer array type")
+                    .label(span.clone(), "empty array needs an `Array<T>` annotation"),
+            ));
+        };
+        Ok(ExprInfo {
+            ty: Type::Array(Box::new(element_ty)),
+            effects,
+            span: span.clone(),
+        })
+    }
 }
 
 fn info(ty: Type, span: Span) -> ExprInfo {
@@ -309,6 +347,33 @@ fn info(ty: Type, span: Span) -> ExprInfo {
         ty,
         effects: EffectRow::default(),
         span,
+    }
+}
+
+fn expect_numeric_pair(left: &ExprInfo, right: &ExprInfo) -> Result<Type> {
+    match (&left.ty, &right.ty) {
+        (Type::Int, Type::Int) => Ok(Type::Int),
+        (Type::Float, Type::Float) => Ok(Type::Float),
+        _ => Err(Error::diagnostic(Diagnostic::new("Type mismatch").label(
+            right.span.clone(),
+            format!(
+                "expected operands with matching numeric types, but found `{:?}` and `{:?}`",
+                left.ty, right.ty
+            ),
+        ))),
+    }
+}
+
+fn expect_comparable_numeric_pair(left: &ExprInfo, right: &ExprInfo) -> Result<()> {
+    match (&left.ty, &right.ty) {
+        (Type::Int, Type::Int) | (Type::Float, Type::Float) => Ok(()),
+        _ => Err(Error::diagnostic(Diagnostic::new("Type mismatch").label(
+            right.span.clone(),
+            format!(
+                "expected operands with matching numeric types, but found `{:?}` and `{:?}`",
+                left.ty, right.ty
+            ),
+        ))),
     }
 }
 

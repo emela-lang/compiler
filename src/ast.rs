@@ -42,8 +42,10 @@ pub(crate) enum BlockItem {
 #[derive(Debug, Clone)]
 pub(crate) enum Expr {
     Int(i32, Span),
+    Float(f64, Span),
     Bool(bool, Span),
     String(String, Span),
+    Array(Vec<Expr>, Span),
     Unit(Span),
     Var(String, Span),
     Call {
@@ -64,8 +66,10 @@ impl Expr {
     pub(crate) fn span(&self) -> Span {
         match self {
             Expr::Int(_, span)
+            | Expr::Float(_, span)
             | Expr::Bool(_, span)
             | Expr::String(_, span)
+            | Expr::Array(_, span)
             | Expr::Unit(span)
             | Expr::Var(_, span) => span.clone(),
             Expr::Call { span, .. } | Expr::Binary { span, .. } => span.clone(),
@@ -88,7 +92,12 @@ pub(crate) enum Type {
     Unit,
     Bool,
     Int,
+    Float,
     String,
+    Array(Box<Type>),
+    Record,
+    Enum,
+    Function,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

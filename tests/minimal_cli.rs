@@ -108,3 +108,83 @@ fn main() -> Int {
     assert!(stdout.contains("return add.i32 %x, %y"));
     assert!(stdout.contains("let value = call @add(40, 2)"));
 }
+
+#[test]
+fn check_accepts_spec_0001_types() {
+    let source = write_source(
+        "main.emel",
+        r#"
+fn keep_float(x: Float) -> Float {
+  x + 0.5
+}
+
+fn keep_array(xs: Array<Int>) -> Array<Int> {
+  xs
+}
+
+fn keep_record(value: Record) -> Record {
+  value
+}
+
+fn keep_enum(value: Enum) -> Enum {
+  value
+}
+
+fn keep_function(value: Function) -> Function {
+  value
+}
+
+fn main() -> Unit {
+  let n: Float = keep_float(1.5)
+  let xs: Array<Int> = [1, 2, 3]
+  let empty: Array<Int> = []
+  ()
+}
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_emela"))
+        .arg("check")
+        .arg("--backend")
+        .arg("js-node")
+        .arg(&source)
+        .output()
+        .unwrap();
+
+    let _ = fs::remove_dir_all(source.parent().unwrap());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn ir_emits_float_and_array_values() {
+    let source = write_source(
+        "main.emel",
+        r#"
+fn main() -> Array<Float> {
+  let first = 1.5 + 2.25
+  [first, 4.0]
+}
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_emela"))
+        .arg("ir")
+        .arg(&source)
+        .output()
+        .unwrap();
+
+    let _ = fs::remove_dir_all(source.parent().unwrap());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("fn main() -> Array<Float> uses {}"));
+    assert!(stdout.contains("let first = add.f64 1.5, 2.25"));
+    assert!(stdout.contains("return [%first, 4]"));
+}
