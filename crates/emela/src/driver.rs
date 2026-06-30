@@ -18,6 +18,8 @@ const DEFAULT_BACKEND: &str = "js-node";
 /// The set of built-in backends, in display order.
 fn registry() -> BackendRegistry {
     let mut registry = BackendRegistry::new();
+    #[cfg(feature = "backend-wasm")]
+    registry.register(Box::new(emela_backend_wasm::WasmBackend));
     #[cfg(feature = "backend-js")]
     registry.register(Box::new(emela_backend_js::JsBackend));
     registry
