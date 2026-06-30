@@ -1,12 +1,13 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use emela_codegen::{
     Artifact, Backend, BackendOptions, BackendRegistry, EmitMode, IrProgram, Tier, emit_text,
 };
 
 use crate::error::{Error, Result};
+use crate::external;
 use crate::imports;
 use crate::lower;
 use crate::parser::parse_program;
@@ -92,6 +93,15 @@ fn build(
         ..Default::default()
     };
     let requested = backend.unwrap_or(DEFAULT_BACKEND);
+
+    // A `--backend PATH` pointing at a descriptor selects an external process.
+    if external::is_descriptor_path(requested) {
+        let backend = external::load_backend(Path::new(requested))?;
+        note_tier(&backend);
+        return backend
+            .compile(&ir, &options)
+            .map_err(|err| Error::new(err.to_string()));
+    }
 
     let registry = registry();
     let name = canonical_backend(requested);
