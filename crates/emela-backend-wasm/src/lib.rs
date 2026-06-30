@@ -234,6 +234,13 @@ fn walk<'a>(expr: &'a IrExpr, visit: &mut impl FnMut(&'a IrExpr)) {
             args.iter().for_each(|a| walk(a, visit));
         }
         IrExpr::Platform { args, .. } => args.iter().for_each(|a| walk(a, visit)),
+        IrExpr::If {
+            cond, then, els, ..
+        } => {
+            walk(cond, visit);
+            walk(then, visit);
+            walk(els, visit);
+        }
         IrExpr::Fn { body, .. } => walk(body, visit),
         IrExpr::Binary { left, right, .. } => {
             walk(left, visit);
@@ -252,6 +259,11 @@ fn walk<'a>(expr: &'a IrExpr, visit: &mut impl FnMut(&'a IrExpr)) {
         }
         IrExpr::Throw { value } | IrExpr::Question { value, .. } => walk(value, visit),
         IrExpr::Panic { message } => walk(message, visit),
+        IrExpr::CharFromCode(value) | IrExpr::StringFromChar(value) => walk(value, visit),
+        IrExpr::Concat { left, right } => {
+            walk(left, visit);
+            walk(right, visit);
+        }
         _ => {}
     }
 }
@@ -744,6 +756,12 @@ impl<'a> FnEmitter<'a> {
                 })?;
                 self.line(&format!("i32.const {offset}"));
             }
+            // A `Char` is its codepoint as i32 (spec 0017); `from_code` is the
+            // identity on that representation.
+            IrExpr::Char(code) => self.line(&format!("i32.const {code}")),
+            IrExpr::CharFromCode(value) => self.emit(value)?,
+            IrExpr::StringFromChar(value) => self.emit_string_from_char(value)?,
+            IrExpr::Concat { left, right } => self.emit_concat(left, right)?,
             IrExpr::Array { elem_ty, elems } => self.emit_array(elem_ty, elems)?,
             IrExpr::FunctionRef { name, .. } => self.emit_function_ref(name)?,
             IrExpr::Fn { captures, .. } => self.emit_closure(expr, captures)?,
@@ -753,6 +771,19 @@ impl<'a> FnEmitter<'a> {
                 arms,
                 ty,
             } => self.emit_match(scrutinee, arms, ty)?,
+            IrExpr::If {
+                cond,
+                then,
+                els,
+                ty,
+            } => {
+                self.emit(cond)?;
+                self.line(&format!("if (result {})", WasmTy::of(ty).keyword()));
+                self.emit(then)?;
+                self.line("else");
+                self.emit(els)?;
+                self.line("end");
+            }
             IrExpr::Panic { .. } => self.line("unreachable"),
             IrExpr::Throw { value } => {
                 self.emit(value)?;
@@ -761,6 +792,83 @@ impl<'a> FnEmitter<'a> {
             IrExpr::Try { body, arms, ty } => self.emit_try(body, arms, ty)?,
             IrExpr::Question { value, mode, ty } => self.emit_question(value, *mode, ty)?,
         }
+        Ok(())
+    }
+
+    /// `String.from_char` (spec 0017): a one-byte (ASCII) `[len=1][byte]` string.
+    /// Multi-byte UTF-8 encoding is a follow-up.
+    fn emit_string_from_char(&mut self, value: &IrExpr) -> Result<()> {
+        let code = self.fresh_local(WasmTy::I32);
+        let out = self.fresh_local(WasmTy::I32);
+        self.emit(value)?;
+        self.line(&format!("local.set {code}"));
+        self.line("i32.const 5");
+        self.line("call $alloc");
+        self.line(&format!("local.set {out}"));
+        self.line(&format!("local.get {out}"));
+        self.line("i32.const 1");
+        self.line("i32.store");
+        self.line(&format!("local.get {out}"));
+        self.line("i32.const 4");
+        self.line("i32.add");
+        self.line(&format!("local.get {code}"));
+        self.line("i32.store8");
+        self.line(&format!("local.get {out}"));
+        Ok(())
+    }
+
+    /// `a ++ b` (spec 0017): allocate `[len_a+len_b][bytes_a bytes_b]` and copy.
+    fn emit_concat(&mut self, left: &IrExpr, right: &IrExpr) -> Result<()> {
+        let a = self.fresh_local(WasmTy::I32);
+        let b = self.fresh_local(WasmTy::I32);
+        let len_a = self.fresh_local(WasmTy::I32);
+        let len_b = self.fresh_local(WasmTy::I32);
+        let out = self.fresh_local(WasmTy::I32);
+        self.emit(left)?;
+        self.line(&format!("local.set {a}"));
+        self.emit(right)?;
+        self.line(&format!("local.set {b}"));
+        self.line(&format!("local.get {a}"));
+        self.line("i32.load");
+        self.line(&format!("local.set {len_a}"));
+        self.line(&format!("local.get {b}"));
+        self.line("i32.load");
+        self.line(&format!("local.set {len_b}"));
+        // out = alloc(4 + len_a + len_b)
+        self.line("i32.const 4");
+        self.line(&format!("local.get {len_a}"));
+        self.line("i32.add");
+        self.line(&format!("local.get {len_b}"));
+        self.line("i32.add");
+        self.line("call $alloc");
+        self.line(&format!("local.set {out}"));
+        // store the combined length
+        self.line(&format!("local.get {out}"));
+        self.line(&format!("local.get {len_a}"));
+        self.line(&format!("local.get {len_b}"));
+        self.line("i32.add");
+        self.line("i32.store");
+        // memory.copy(dest = out+4, src = a+4, n = len_a)
+        self.line(&format!("local.get {out}"));
+        self.line("i32.const 4");
+        self.line("i32.add");
+        self.line(&format!("local.get {a}"));
+        self.line("i32.const 4");
+        self.line("i32.add");
+        self.line(&format!("local.get {len_a}"));
+        self.line("memory.copy");
+        // memory.copy(dest = out+4+len_a, src = b+4, n = len_b)
+        self.line(&format!("local.get {out}"));
+        self.line("i32.const 4");
+        self.line("i32.add");
+        self.line(&format!("local.get {len_a}"));
+        self.line("i32.add");
+        self.line(&format!("local.get {b}"));
+        self.line("i32.const 4");
+        self.line("i32.add");
+        self.line(&format!("local.get {len_b}"));
+        self.line("memory.copy");
+        self.line(&format!("local.get {out}"));
         Ok(())
     }
 
@@ -1123,13 +1231,20 @@ fn binary_op(op: BinaryOp, operand_ty: &Type) -> &'static str {
         (WasmTy::I32, BinaryOp::Add) => "i32.add",
         (WasmTy::I32, BinaryOp::Sub) => "i32.sub",
         (WasmTy::I32, BinaryOp::Mul) => "i32.mul",
+        (WasmTy::I32, BinaryOp::Div) => "i32.div_s",
+        (WasmTy::I32, BinaryOp::Rem) => "i32.rem_s",
         (WasmTy::I32, BinaryOp::Eq) => "i32.eq",
         (WasmTy::I32, BinaryOp::Lt) => "i32.lt_s",
         (WasmTy::F64, BinaryOp::Add) => "f64.add",
         (WasmTy::F64, BinaryOp::Sub) => "f64.sub",
         (WasmTy::F64, BinaryOp::Mul) => "f64.mul",
+        (WasmTy::F64, BinaryOp::Div) => "f64.div",
         (WasmTy::F64, BinaryOp::Eq) => "f64.eq",
         (WasmTy::F64, BinaryOp::Lt) => "f64.lt",
+        // `%` is Int-only (spec 0016); the type checker rejects Float `%`.
+        (WasmTy::F64, BinaryOp::Rem) => unreachable!("Float % rejected by type checker"),
+        // `++` lowers to `IrExpr::Concat`, never to a Binary (spec 0017).
+        (_, BinaryOp::Concat) => unreachable!("concat lowers to IrExpr::Concat"),
     }
 }
 

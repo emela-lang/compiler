@@ -58,6 +58,12 @@ fn inline_expr(expr: &IrExpr) -> String {
         IrExpr::Float(value) => value.to_string(),
         IrExpr::Bool(value) => value.to_string(),
         IrExpr::String(value) => format!("{value:?}"),
+        IrExpr::Char(value) => format!("char {value}"),
+        IrExpr::CharFromCode(value) => format!("char_from_code {}", inline_expr(value)),
+        IrExpr::StringFromChar(value) => format!("string_from_char {}", inline_expr(value)),
+        IrExpr::Concat { left, right } => {
+            format!("concat {}, {}", inline_expr(left), inline_expr(right))
+        }
         IrExpr::Array { elems, .. } => format!(
             "[{}]",
             elems.iter().map(inline_expr).collect::<Vec<_>>().join(", ")
@@ -119,6 +125,14 @@ fn inline_expr(expr: &IrExpr) -> String {
             inline_expr(scrutinee),
             arms.iter().map(inline_arm).collect::<Vec<_>>().join(" ")
         ),
+        IrExpr::If {
+            cond, then, els, ..
+        } => format!(
+            "if {} {{ {} }} else {{ {} }}",
+            inline_expr(cond),
+            inline_expr(then),
+            inline_expr(els)
+        ),
         IrExpr::Throw { value } => format!("throw {}", inline_expr(value)),
         IrExpr::Try { body, arms, .. } => format!(
             "try {{ {} }} catch {{ {} }}",
@@ -162,6 +176,9 @@ fn ir_op(op: BinaryOp) -> &'static str {
         BinaryOp::Add => "add",
         BinaryOp::Sub => "sub",
         BinaryOp::Mul => "mul",
+        BinaryOp::Div => "div",
+        BinaryOp::Rem => "rem",
+        BinaryOp::Concat => "concat",
         BinaryOp::Eq => "eq",
         BinaryOp::Lt => "lt",
     }
@@ -181,6 +198,7 @@ fn type_name(ty: &Type) -> String {
         Type::Int => "Int".to_string(),
         Type::Float => "Float".to_string(),
         Type::String => "String".to_string(),
+        Type::Char => "Char".to_string(),
         Type::Array(element) => format!("Array<{}>", type_name(element)),
         Type::Record => "Record".to_string(),
         Type::Enum(name) => name.clone(),

@@ -234,6 +234,7 @@ impl Parser {
             "Int" => Ok(Type::Int),
             "Float" => Ok(Type::Float),
             "String" => Ok(Type::String),
+            "Char" => Ok(Type::Char),
             "Array" => {
                 self.expect(&TokenKind::Lt)?;
                 let element = self.parse_type()?;
@@ -341,6 +342,8 @@ impl Parser {
         loop {
             let op = if self.eat(&TokenKind::Plus) {
                 BinaryOp::Add
+            } else if self.eat(&TokenKind::PlusPlus) {
+                BinaryOp::Concat
             } else if self.eat(&TokenKind::Minus) {
                 BinaryOp::Sub
             } else {
@@ -360,11 +363,20 @@ impl Parser {
 
     fn parse_product(&mut self) -> Result<Expr> {
         let mut expr = self.parse_call()?;
-        while self.eat(&TokenKind::Star) {
+        loop {
+            let op = if self.eat(&TokenKind::Star) {
+                BinaryOp::Mul
+            } else if self.eat(&TokenKind::Slash) {
+                BinaryOp::Div
+            } else if self.eat(&TokenKind::Percent) {
+                BinaryOp::Rem
+            } else {
+                break;
+            };
             let right = self.parse_call()?;
             let span = expr.span().merge(&right.span());
             expr = Expr::Binary {
-                op: BinaryOp::Mul,
+                op,
                 left: Box::new(expr),
                 right: Box::new(right),
                 span,
@@ -419,6 +431,10 @@ impl Parser {
             TokenKind::String(value) => {
                 let span = self.bump().span;
                 Ok(Expr::String(value, span))
+            }
+            TokenKind::Char(value) => {
+                let span = self.bump().span;
+                Ok(Expr::Char(value, span))
             }
             TokenKind::True => {
                 let span = self.bump().span;
@@ -478,6 +494,7 @@ impl Parser {
             }
             TokenKind::Match => self.parse_match(),
             TokenKind::Try => self.parse_try(),
+            TokenKind::If => self.parse_if(),
             TokenKind::Fn => self.parse_fn_expr(),
             TokenKind::LBracket => {
                 let start = self.bump().span;
@@ -530,6 +547,21 @@ impl Parser {
         })
     }
 
+    fn parse_if(&mut self) -> Result<Expr> {
+        let start = self.expect(&TokenKind::If)?.span;
+        let cond = self.parse_expr()?;
+        let then = self.parse_block()?;
+        self.expect(&TokenKind::Else)?;
+        let els = self.parse_block()?;
+        let span = start.merge(&els.span);
+        Ok(Expr::If {
+            cond: Box::new(cond),
+            then,
+            els,
+            span,
+        })
+    }
+
     fn parse_match(&mut self) -> Result<Expr> {
         let start = self.expect(&TokenKind::Match)?.span;
         let scrutinee = self.parse_expr()?;
@@ -562,8 +594,7 @@ impl Parser {
         self.skip_newlines();
         while !self.at(&TokenKind::RBrace) {
             let pattern = self.parse_pattern()?;
-            let guard = if matches!(&self.peek().kind, TokenKind::Ident(name) if name == "if") {
-                self.bump();
+            let guard = if self.eat(&TokenKind::If) {
                 Some(self.parse_expr()?)
             } else {
                 None

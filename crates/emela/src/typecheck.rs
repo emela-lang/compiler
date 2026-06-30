@@ -446,6 +446,7 @@ impl Checker {
             Expr::Float(_, span) => Ok(self.info(Type::Float, span.clone())),
             Expr::Bool(_, span) => Ok(self.info(Type::Bool, span.clone())),
             Expr::String(_, span) => Ok(self.info(Type::String, span.clone())),
+            Expr::Char(_, span) => Ok(self.info(Type::Char, span.clone())),
             Expr::Array(elements, span) => {
                 self.check_array(elements, span, scope, ctx, None, allow_throw)
             }
@@ -535,8 +536,25 @@ impl Checker {
                 effects.union(&right.effects);
                 let throws = merge_throws(left.throws.clone(), right.throws.clone(), span.clone())?;
                 let ty = match op {
-                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul => {
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
                         expect_numeric_pair(&left, &right)?
+                    }
+                    BinaryOp::Rem => match (&left.ty, &right.ty) {
+                        (Type::Int, Type::Int) => Type::Int,
+                        _ => {
+                            return Err(Error::diagnostic(Diagnostic::new("Type mismatch").label(
+                                right.span.clone(),
+                                format!(
+                                    "`%` requires `Int` operands, but found `{:?}` and `{:?}`",
+                                    left.ty, right.ty
+                                ),
+                            )));
+                        }
+                    },
+                    BinaryOp::Concat => {
+                        expect_assignable(&left.ty, &Type::String, left.span.clone())?;
+                        expect_assignable(&right.ty, &Type::String, right.span.clone())?;
+                        Type::String
                     }
                     BinaryOp::Eq | BinaryOp::Lt => {
                         expect_comparable_numeric_pair(&left, &right)?;
@@ -631,13 +649,51 @@ impl Checker {
                 variant,
                 args,
                 span,
-            } => self.check_variant(enum_name, variant, args, span, scope, ctx, allow_throw),
+            } => {
+                // Built-in pure conversions (spec 0017), spelled `Char.from_code`
+                // and `String.from_char`.
+                if let Some(builtin) = self.check_char_builtin(
+                    enum_name,
+                    variant,
+                    args,
+                    span,
+                    scope,
+                    ctx,
+                    allow_throw,
+                )? {
+                    return Ok(builtin);
+                }
+                self.check_variant(enum_name, variant, args, span, scope, ctx, allow_throw)
+            }
             Expr::Match {
                 scrutinee,
                 arms,
                 span,
             } => self.check_match(scrutinee, arms, span, scope, ctx, allow_throw),
             Expr::Try { body, arms, span } => self.check_try(body, arms, span, scope, ctx),
+            Expr::If {
+                cond,
+                then,
+                els,
+                span,
+            } => {
+                let cond_info = self.check_expr(cond, scope, ctx, allow_throw)?;
+                expect_assignable(&cond_info.ty, &Type::Bool, cond_info.span.clone())?;
+                let then_info = self.check_block(then, scope, ctx, allow_throw)?;
+                let els_info = self.check_block(els, scope, ctx, allow_throw)?;
+                let ty = unify_arm(Some(then_info.ty), els_info.ty, els_info.span.clone())?;
+                let mut effects = cond_info.effects;
+                effects.union(&then_info.effects);
+                effects.union(&els_info.effects);
+                let throws = merge_throws(cond_info.throws, then_info.throws, span.clone())?;
+                let throws = merge_throws(throws, els_info.throws, span.clone())?;
+                Ok(ExprInfo {
+                    ty,
+                    effects,
+                    throws,
+                    span: span.clone(),
+                })
+            }
         }
     }
 
@@ -720,6 +776,46 @@ impl Checker {
             throws,
             span: span.clone(),
         })
+    }
+
+    /// Type-checks the built-in pure conversions `Char.from_code(Int) -> Char`
+    /// and `String.from_char(Char) -> String` (spec 0017). Returns `None` when
+    /// the call is not one of them.
+    #[allow(clippy::too_many_arguments)]
+    fn check_char_builtin(
+        &self,
+        enum_name: &Option<String>,
+        variant: &str,
+        args: &[Expr],
+        span: &Span,
+        scope: &mut HashMap<String, Type>,
+        ctx: &FnCtx,
+        allow_throw: bool,
+    ) -> Result<Option<ExprInfo>> {
+        let Some(name) = enum_name else {
+            return Ok(None);
+        };
+        let (arg_ty, ret_ty) = match (name.as_str(), variant) {
+            ("Char", "from_code") => (Type::Int, Type::Char),
+            ("String", "from_char") => (Type::Char, Type::String),
+            _ => return Ok(None),
+        };
+        if args.len() != 1 {
+            return Err(Error::diagnostic(
+                Diagnostic::new("Wrong number of arguments").label(
+                    span.clone(),
+                    format!("`{name}.{variant}` takes 1 argument, got {}", args.len()),
+                ),
+            ));
+        }
+        let arg = self.check_expr(&args[0], scope, ctx, allow_throw)?;
+        expect_assignable(&arg.ty, &arg_ty, arg.span.clone())?;
+        Ok(Some(ExprInfo {
+            ty: ret_ty,
+            effects: arg.effects,
+            throws: arg.throws,
+            span: span.clone(),
+        }))
     }
 
     fn check_variant(

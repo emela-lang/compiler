@@ -107,6 +107,7 @@ pub(crate) enum Expr {
     Float(f64, Span),
     Bool(bool, Span),
     String(String, Span),
+    Char(char, Span),
     Array(Vec<Expr>, Span),
     Unit(Span),
     Var(String, Span),
@@ -130,6 +131,13 @@ pub(crate) enum Expr {
         span: Span,
     },
     Block(Block),
+    /// `if cond { then } else { els }` (spec 0015).
+    If {
+        cond: Box<Expr>,
+        then: Block,
+        els: Block,
+        span: Span,
+    },
     /// `throw e` (spec 0011).
     Throw {
         value: Box<Expr>,
@@ -173,6 +181,7 @@ impl Expr {
             | Expr::Float(_, span)
             | Expr::Bool(_, span)
             | Expr::String(_, span)
+            | Expr::Char(_, span)
             | Expr::Array(_, span)
             | Expr::Unit(span)
             | Expr::Var(_, span) => span.clone(),
@@ -184,6 +193,7 @@ impl Expr {
             | Expr::Question { span, .. }
             | Expr::Match { span, .. }
             | Expr::Try { span, .. }
+            | Expr::If { span, .. }
             | Expr::Variant { span, .. } => span.clone(),
             Expr::Block(block) => block.span.clone(),
         }

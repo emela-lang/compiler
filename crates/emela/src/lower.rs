@@ -186,6 +186,7 @@ impl Lowerer {
             Expr::Float(value, _) => (IrExpr::Float(*value), Type::Float),
             Expr::Bool(value, _) => (IrExpr::Bool(*value), Type::Bool),
             Expr::String(value, _) => (IrExpr::String(value.clone()), Type::String),
+            Expr::Char(value, _) => (IrExpr::Char(*value as u32), Type::Char),
             Expr::Array(elements, _) => self.lower_array(elements, scope, None),
             Expr::Unit(_) => (IrExpr::Unit, Type::Unit),
             Expr::Var(name, _) => {
@@ -271,8 +272,22 @@ impl Lowerer {
             } => {
                 let (left, left_ty) = self.lower_expr(left, scope);
                 let (right, _) = self.lower_expr(right, scope);
+                if matches!(op, BinaryOp::Concat) {
+                    return (
+                        IrExpr::Concat {
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        },
+                        Type::String,
+                    );
+                }
                 let result_ty = match op {
-                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul => left_ty.clone(),
+                    BinaryOp::Add
+                    | BinaryOp::Sub
+                    | BinaryOp::Mul
+                    | BinaryOp::Div
+                    | BinaryOp::Rem => left_ty.clone(),
+                    BinaryOp::Concat => Type::String,
                     BinaryOp::Eq | BinaryOp::Lt => Type::Bool,
                 };
                 (
@@ -286,6 +301,23 @@ impl Lowerer {
                 )
             }
             Expr::Block(block) => self.lower_block(&block.items, &mut scope.clone()),
+            Expr::If {
+                cond, then, els, ..
+            } => {
+                let (cond_ir, _) = self.lower_expr(cond, scope);
+                let (then_ir, then_ty) = self.lower_block(&then.items, &mut scope.clone());
+                let (els_ir, els_ty) = self.lower_block(&els.items, &mut scope.clone());
+                let ty = pick_ty([then_ty, els_ty].into_iter());
+                (
+                    IrExpr::If {
+                        cond: Box::new(cond_ir),
+                        then: Box::new(then_ir),
+                        els: Box::new(els_ir),
+                        ty: ty.clone(),
+                    },
+                    ty,
+                )
+            }
             Expr::Throw { value, .. } => {
                 let (value, _) = self.lower_expr(value, scope);
                 (
@@ -342,6 +374,15 @@ impl Lowerer {
                 args,
                 ..
             } => {
+                // Built-in pure conversions (spec 0017).
+                if enum_name.as_deref() == Some("Char") && variant == "from_code" {
+                    let (arg, _) = self.lower_expr(&args[0], scope);
+                    return (IrExpr::CharFromCode(Box::new(arg)), Type::Char);
+                }
+                if enum_name.as_deref() == Some("String") && variant == "from_char" {
+                    let (arg, _) = self.lower_expr(&args[0], scope);
+                    return (IrExpr::StringFromChar(Box::new(arg)), Type::String);
+                }
                 let name = enum_name.clone().unwrap_or_default();
                 let tag = self
                     .enums
@@ -682,6 +723,13 @@ fn free_vars_expr(expr: &Expr, bound: &HashSet<String>, out: &mut Vec<String>) {
             free_vars_block(&body.items, &inner, out);
         }
         Expr::Block(block) => free_vars_block(&block.items, bound, out),
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            free_vars_expr(cond, bound, out);
+            free_vars_block(&then.items, bound, out);
+            free_vars_block(&els.items, bound, out);
+        }
         Expr::Throw { value, .. } | Expr::Question { value, .. } => {
             free_vars_expr(value, bound, out)
         }
@@ -709,6 +757,7 @@ fn free_vars_expr(expr: &Expr, bound: &HashSet<String>, out: &mut Vec<String>) {
         | Expr::Float(_, _)
         | Expr::Bool(_, _)
         | Expr::String(_, _)
+        | Expr::Char(_, _)
         | Expr::Unit(_) => {}
     }
 }

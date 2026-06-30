@@ -37,8 +37,12 @@ the JSON IR protocol (see [Backends](#backends)).
 - function types such as `(Int) -> Int` and `(Int, Int) -> Int uses { ... }`
 - first-class functions: function values, `fn` lambda expressions, closures, and
   higher-order functions
-- numeric arithmetic `+`, `-`, `*` on matching `Int` or `Float` operands
+- numeric arithmetic `+`, `-`, `*`, `/` on matching `Int` or `Float` operands,
+  and `%` on `Int` (integer division truncates toward zero; division by zero traps)
 - comparisons `==` and `<` on matching numeric operands, producing `Bool`
+- `if cond { ... } else { ... }` as an expression (the `else` branch is required)
+- a `Char` type with `'x'` literals, `String` concatenation `++`, and the pure
+  conversions `Char.from_code(Int)` / `String.from_char(Char)`
 - `extern fn` platform functions whose side effects are resolved by the
   selected backend's runtime (see [Standard library and platform functions](#standard-library-and-platform-functions))
 - effect rows declared with `uses { ... }`, checked so a body's effects are a
@@ -62,9 +66,9 @@ cannot appear in runnable code.
 
 To set expectations, the following are **not** part of this build:
 
-- no `if` expression; branch with `match` instead
 - no `struct`, `trait`, or `impl` declarations
-- no string concatenation or boolean operators
+- no boolean operators (`&&` / `||`); branch with `if` or `match`
+- WebAssembly `String.from_char` currently encodes ASCII (1-byte) only
 - no native (machine-code) backend
 - platform functions are still the minimal `Unit`-returning set and do not yet
   declare `throws`
@@ -162,6 +166,14 @@ package, so it is built with a package root:
 ```sh
 cargo run --bin emela -- build --backend js-node --package examples/stdlib examples/hello.emel | node
 # prints: Hello, Emela!
+```
+
+`examples/print_int.emel` converts an integer to text with the pure
+`std.int.to_string` (built on `if`, `/`/`%`, and `Char`/`++`) and prints it:
+
+```sh
+cargo run --bin emela -- build --backend js-node --package examples/stdlib examples/print_int.emel | node
+# prints: 42
 ```
 
 The same examples build to WebAssembly; the numeric ones produce the same value

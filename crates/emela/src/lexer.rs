@@ -13,6 +13,8 @@ pub(crate) enum TokenKind {
     Uses,
     Enum,
     Match,
+    If,
+    Else,
     Throws,
     Throw,
     Try,
@@ -24,6 +26,7 @@ pub(crate) enum TokenKind {
     Int(i32),
     Float(f64),
     String(String),
+    Char(char),
     LParen,
     RParen,
     LBrace,
@@ -39,8 +42,11 @@ pub(crate) enum TokenKind {
     Lt,
     Gt,
     Plus,
+    PlusPlus,
     Minus,
     Star,
+    Slash,
+    Percent,
     Question,
     Newline,
     Eof,
@@ -110,9 +116,18 @@ fn lex_with_file(source: &str, file: Arc<SourceFile>) -> Result<Vec<Token>> {
             b'=' => push(&mut tokens, TokenKind::Eq, file.clone(), start, &mut i),
             b'<' => push(&mut tokens, TokenKind::Lt, file.clone(), start, &mut i),
             b'>' => push(&mut tokens, TokenKind::Gt, file.clone(), start, &mut i),
+            b'+' if i + 1 < bytes.len() && bytes[i + 1] == b'+' => {
+                tokens.push(Token {
+                    kind: TokenKind::PlusPlus,
+                    span: Span::new(file.clone(), start, start + 2),
+                });
+                i += 2;
+            }
             b'+' => push(&mut tokens, TokenKind::Plus, file.clone(), start, &mut i),
             b'-' => push(&mut tokens, TokenKind::Minus, file.clone(), start, &mut i),
             b'*' => push(&mut tokens, TokenKind::Star, file.clone(), start, &mut i),
+            b'/' => push(&mut tokens, TokenKind::Slash, file.clone(), start, &mut i),
+            b'%' => push(&mut tokens, TokenKind::Percent, file.clone(), start, &mut i),
             b'?' => push(
                 &mut tokens,
                 TokenKind::Question,
@@ -202,6 +217,53 @@ fn lex_with_file(source: &str, file: Arc<SourceFile>) -> Result<Vec<Token>> {
                     span: Span::new(file.clone(), start, i),
                 });
             }
+            b'\'' => {
+                let bad_char = |from: usize, to: usize| {
+                    Error::diagnostic(Diagnostic::new("Invalid character literal").label(
+                        Span::new(file.clone(), from, to),
+                        "a character literal holds exactly one character, e.g. `'a'`",
+                    ))
+                };
+                i += 1;
+                if i >= bytes.len() {
+                    return Err(bad_char(start, i));
+                }
+                let ch = if bytes[i] == b'\\' {
+                    i += 1;
+                    if i >= bytes.len() {
+                        return Err(bad_char(start, i));
+                    }
+                    let escaped = match bytes[i] {
+                        b'n' => '\n',
+                        b't' => '\t',
+                        b'\'' => '\'',
+                        b'"' => '"',
+                        b'\\' => '\\',
+                        other => {
+                            return Err(Error::diagnostic(
+                                Diagnostic::new("Unsupported character escape").label(
+                                    Span::new(file.clone(), i - 1, i + 1),
+                                    format!("unsupported escape `\\{}`", other as char),
+                                ),
+                            ));
+                        }
+                    };
+                    i += 1;
+                    escaped
+                } else {
+                    let ch = source[i..].chars().next().expect("char boundary");
+                    i += ch.len_utf8();
+                    ch
+                };
+                if i >= bytes.len() || bytes[i] != b'\'' {
+                    return Err(bad_char(start, i));
+                }
+                i += 1;
+                tokens.push(Token {
+                    kind: TokenKind::Char(ch),
+                    span: Span::new(file.clone(), start, i),
+                });
+            }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 i += 1;
                 while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
@@ -218,6 +280,8 @@ fn lex_with_file(source: &str, file: Arc<SourceFile>) -> Result<Vec<Token>> {
                     "uses" => TokenKind::Uses,
                     "enum" => TokenKind::Enum,
                     "match" => TokenKind::Match,
+                    "if" => TokenKind::If,
+                    "else" => TokenKind::Else,
                     "throws" => TokenKind::Throws,
                     "throw" => TokenKind::Throw,
                     "try" => TokenKind::Try,

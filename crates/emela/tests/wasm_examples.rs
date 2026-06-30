@@ -108,3 +108,22 @@ fn builds_option_question() {
         "fn first() -> Option<Int> { Some(5) }\nfn chain() -> Option<Int> {\n  let x = first()?\n  Some(x)\n}\nfn main() -> Int {\n  match chain() {\n    Some(v) -> v\n    None -> 0\n  }\n}\n",
     );
 }
+
+#[test]
+fn builds_if_expression() {
+    build_wasm(
+        "fn pick(n: Int) -> Int { if n < 0 { 0 - n } else { n } }\nfn main() -> Int { if pick(0 - 5) == 5 { 42 } else { 7 } }\n",
+    );
+}
+
+#[test]
+fn builds_integer_division_and_remainder() {
+    build_wasm("fn main() -> Int { (7 / 2) + (7 % 2) }\n");
+}
+
+#[test]
+fn builds_char_and_concat() {
+    build_wasm(
+        "fn digit(d: Int) -> String { String.from_char(Char.from_code(48 + d)) }\nfn main() -> String { \"x\" ++ digit(7) ++ String.from_char('Z') }\n",
+    );
+}

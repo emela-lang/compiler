@@ -50,6 +50,8 @@ pub enum IrExpr {
     Float(f64),
     Bool(bool),
     String(String),
+    /// A `Char` literal as a Unicode scalar value (spec 0017).
+    Char(u32),
     Unit,
     Array {
         elem_ty: Type,
@@ -93,6 +95,22 @@ pub enum IrExpr {
     Binary {
         op: BinaryOp,
         ty: Type,
+        left: Box<IrExpr>,
+        right: Box<IrExpr>,
+    },
+    /// `if cond { then } else { els }` (spec 0015). Both branches have type `ty`.
+    If {
+        cond: Box<IrExpr>,
+        then: Box<IrExpr>,
+        els: Box<IrExpr>,
+        ty: Type,
+    },
+    /// `Char.from_code(n)` (spec 0017): codepoint Int -> Char.
+    CharFromCode(Box<IrExpr>),
+    /// `String.from_char(c)` (spec 0017): a one-character String.
+    StringFromChar(Box<IrExpr>),
+    /// `a ++ b` (spec 0017): String concatenation.
+    Concat {
         left: Box<IrExpr>,
         right: Box<IrExpr>,
     },
@@ -143,6 +161,8 @@ impl IrExpr {
             IrExpr::Float(_) => Type::Float,
             IrExpr::Bool(_) => Type::Bool,
             IrExpr::String(_) => Type::String,
+            IrExpr::Char(_) | IrExpr::CharFromCode(_) => Type::Char,
+            IrExpr::StringFromChar(_) | IrExpr::Concat { .. } => Type::String,
             IrExpr::Unit => Type::Unit,
             IrExpr::Array { elem_ty, .. } => Type::Array(Box::new(elem_ty.clone())),
             IrExpr::Var { ty, .. } => ty.clone(),
@@ -169,6 +189,7 @@ impl IrExpr {
             IrExpr::EnumValue { ty, .. }
             | IrExpr::Match { ty, .. }
             | IrExpr::Try { ty, .. }
+            | IrExpr::If { ty, .. }
             | IrExpr::Question { ty, .. } => ty.clone(),
             IrExpr::Throw { .. } | IrExpr::Panic { .. } => Type::Never,
         }

@@ -12,6 +12,8 @@ pub enum Type {
     Int,
     Float,
     String,
+    /// A single Unicode scalar value (spec 0017).
+    Char,
     Array(Box<Type>),
     Record,
     /// A named enum type (spec 0005), identified by its declared name.
@@ -42,6 +44,10 @@ pub enum BinaryOp {
     Add,
     Sub,
     Mul,
+    Div,
+    Rem,
+    /// String concatenation `++` (spec 0017).
+    Concat,
     Eq,
     Lt,
 }

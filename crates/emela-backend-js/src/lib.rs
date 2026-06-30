@@ -99,6 +99,20 @@ fn collect_platform(expr: &IrExpr, order: &mut Vec<String>, seen: &mut HashSet<S
             collect_platform(value, order, seen);
         }
         IrExpr::Panic { message } => collect_platform(message, order, seen),
+        IrExpr::If {
+            cond, then, els, ..
+        } => {
+            collect_platform(cond, order, seen);
+            collect_platform(then, order, seen);
+            collect_platform(els, order, seen);
+        }
+        IrExpr::CharFromCode(value) | IrExpr::StringFromChar(value) => {
+            collect_platform(value, order, seen);
+        }
+        IrExpr::Concat { left, right } => {
+            collect_platform(left, order, seen);
+            collect_platform(right, order, seen);
+        }
         _ => {}
     }
 }
@@ -184,6 +198,11 @@ fn emit_expr(expr: &IrExpr) -> String {
         IrExpr::Float(value) => value.to_string(),
         IrExpr::Bool(value) => value.to_string(),
         IrExpr::String(value) => format!("{value:?}"),
+        // A `Char` is its Unicode scalar value as a number (spec 0017).
+        IrExpr::Char(value) => value.to_string(),
+        IrExpr::CharFromCode(value) => emit_expr(value),
+        IrExpr::StringFromChar(value) => format!("String.fromCodePoint({})", emit_expr(value)),
+        IrExpr::Concat { left, right } => format!("({} + {})", emit_expr(left), emit_expr(right)),
         IrExpr::Array { elems, .. } => format!(
             "[{}]",
             elems.iter().map(emit_expr).collect::<Vec<_>>().join(", ")
@@ -226,16 +245,26 @@ fn emit_expr(expr: &IrExpr) -> String {
             }
         }
         IrExpr::Binary {
-            op, left, right, ..
+            op,
+            ty,
+            left,
+            right,
         } => {
-            let op = match op {
-                BinaryOp::Add => "+",
-                BinaryOp::Sub => "-",
-                BinaryOp::Mul => "*",
-                BinaryOp::Eq => "===",
-                BinaryOp::Lt => "<",
-            };
-            format!("({} {} {})", emit_expr(left), op, emit_expr(right))
+            let a = emit_expr(left);
+            let b = emit_expr(right);
+            match op {
+                BinaryOp::Add => format!("({a} + {b})"),
+                BinaryOp::Sub => format!("({a} - {b})"),
+                BinaryOp::Mul => format!("({a} * {b})"),
+                // Integer division truncates toward zero (spec 0016).
+                BinaryOp::Div if *ty == Type::Int => format!("(({a} / {b}) | 0)"),
+                BinaryOp::Div => format!("({a} / {b})"),
+                BinaryOp::Rem => format!("({a} % {b})"),
+                // `++` lowers to `IrExpr::Concat`, never to a Binary.
+                BinaryOp::Concat => unreachable!("concat lowers to IrExpr::Concat"),
+                BinaryOp::Eq => format!("({a} === {b})"),
+                BinaryOp::Lt => format!("({a} < {b})"),
+            }
         }
         IrExpr::EnumValue { tag, payload, .. } => format!(
             "{{ tag: {tag}, values: [{}] }}",
@@ -244,6 +273,14 @@ fn emit_expr(expr: &IrExpr) -> String {
         IrExpr::Match {
             scrutinee, arms, ..
         } => emit_match(scrutinee, arms),
+        IrExpr::If {
+            cond, then, els, ..
+        } => format!(
+            "({} ? ({}) : ({}))",
+            emit_expr(cond),
+            emit_expr(then),
+            emit_expr(els)
+        ),
         IrExpr::Throw { value } => {
             format!(
                 "(() => {{ throw new EmelaError({}); }})()",

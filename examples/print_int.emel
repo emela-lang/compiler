@@ -1,0 +1,12 @@
+-- Prints an integer by converting it to a String with the (pure) standard
+-- library and writing it through the `io` platform.
+--
+--   emela build --backend js-node   --package examples/stdlib examples/print_int.emel | node
+--   emela build --backend wasm-wasi --package examples/stdlib -o out.wasm examples/print_int.emel
+
+import std.io.print
+import std.int.to_string
+
+fn main() -> Unit uses { io } {
+  print(to_string(42) ++ "\n")
+}
