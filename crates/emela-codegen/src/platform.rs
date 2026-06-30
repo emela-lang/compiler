@@ -50,6 +50,13 @@ pub fn platform_interface() -> Vec<PlatformFn> {
             ret: Type::Unit,
             capability: "io".to_string(),
         },
+        PlatformFn {
+            path: vec!["clock".to_string()],
+            name: "monotonic_seconds".to_string(),
+            params: vec![],
+            ret: Type::Int,
+            capability: "clock".to_string(),
+        }
     ]
 }
 

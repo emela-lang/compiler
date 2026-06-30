@@ -163,12 +163,69 @@ fn compile_frontend(
 ) -> Result<(crate::ast::Program, typecheck::TypedProgram)> {
     let source = fs::read_to_string(input)
         .map_err(|err| Error::new(format!("failed to read `{}`: {err}", input.display())))?;
+    compile_frontend_source(input, &source, package_paths)
+}
+
+/// Runs the frontend over an in-memory source string, without reading the entry
+/// point from disk. `input` is used only as a diagnostic label and as the base
+/// directory for resolving relative imports.
+fn compile_frontend_source(
+    input: &Path,
+    source: &str,
+    package_paths: &[PathBuf],
+) -> Result<(crate::ast::Program, typecheck::TypedProgram)> {
     let label = input.display().to_string();
-    let program = parse_program(&label, &source)?;
+    let program = parse_program(&label, source)?;
     let packages = imports::load_packages(package_paths)?;
     let program = imports::resolve_imports(input, program, &packages)?;
     let typed = typecheck::check(&program)?;
     Ok((program, typed))
+}
+
+/// Type-checks an in-memory source string. Filesystem-free entry point used by
+/// embedders such as the WebAssembly playground.
+pub(crate) fn check_source(label: &str, source: &str) -> Result<()> {
+    compile_frontend_source(Path::new(label), source, &[])?;
+    Ok(())
+}
+
+/// Lowers an in-memory source string to IR and renders it as text.
+pub(crate) fn ir_source(label: &str, source: &str) -> Result<String> {
+    let (program, typed) = compile_frontend_source(Path::new(label), source, &[])?;
+    let ir = lower::lower(&program, &typed);
+    Ok(emit_text(&ir))
+}
+
+/// Compiles an in-memory source string with a built-in backend. External
+/// (process-based) backends are intentionally not reachable here.
+pub(crate) fn compile_source(
+    label: &str,
+    source: &str,
+    backend: &str,
+    mode: EmitMode,
+) -> Result<Artifact> {
+    let (program, typed) = compile_frontend_source(Path::new(label), source, &[])?;
+    let ir = lower::lower(&program, &typed);
+    let options = BackendOptions {
+        mode,
+        ..Default::default()
+    };
+    let registry = registry();
+    let name = canonical_backend(backend);
+    let backend = registry.get(name).ok_or_else(|| {
+        let available = registry
+            .list()
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Error::new(format!(
+            "unknown backend `{name}`; available backends: {available}"
+        ))
+    })?;
+    backend
+        .compile(&ir, &options)
+        .map_err(|err| Error::new(err.to_string()))
 }
 
 enum Command {

@@ -43,6 +43,7 @@ fn runtime_impl(name: &str) -> Option<&'static str> {
     match name {
         "io.write_stdout" => Some("(s) => process.stdout.write(s)"),
         "io.write_stderr" => Some("(s) => process.stderr.write(s)"),
+        "clock.monotonic_seconds" => Some("() => Math.floor(Date.now() / 1000)"),
         _ => None,
     }
 }

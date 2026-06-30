@@ -1,0 +1,7 @@
+module clock
+
+extern fn monotonic_seconds() -> Int uses { clock }
+
+pub fn now() -> Int uses { clock } {
+  monotonic_seconds()
+}
