@@ -1,0 +1,18 @@
+[package]
+name = "emela-wasm"
+version.workspace = true
+edition.workspace = true
+description = "WebAssembly bindings exposing the Emela compiler to the browser playground."
+
+[lib]
+name = "emela_wasm"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+emela = { path = "../emela" }
+# Pinned to match the wasm-bindgen CLI available from nixpkgs (`nix run
+# nixpkgs#wasm-bindgen-cli`); the crate and CLI versions must match exactly.
+wasm-bindgen = "=0.2.121"
+serde = { workspace = true }
+serde_json = { workspace = true }
+console_error_panic_hook = "0.1"

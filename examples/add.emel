@@ -1,7 +1,12 @@
-fn add(x: i32, y: i32) -> i32 {
-    x + y
+-- Functions with typed parameters, and a call from `main`.
+--
+--   emela check --backend js-node examples/add.emel
+--   emela build --backend js-node examples/add.emel
+
+fn add(x: Int, y: Int) -> Int {
+  x + y
 }
 
-fn main() -> i32 {
+fn main() -> Int {
   add(20, 22)
 }

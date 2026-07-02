@@ -1,0 +1,25 @@
+-- `std.int`: integer formatting, written in pure Emela using the language
+-- primitives `if` (0015), `/` and `%` (0016), and `Char`/`++` (0017).
+
+module int
+
+-- Digits of a strictly positive number, most significant first.
+fn digits(n: Int) -> String uses {} {
+  if n == 0 {
+    ""
+  } else {
+    digits(n / 10) ++ String.from_char(Char.from_code(48 + n % 10))
+  }
+}
+
+pub fn to_string(n: Int) -> String uses {} {
+  if n == 0 {
+    "0"
+  } else {
+    if n < 0 {
+      "-" ++ digits(0 - n)
+    } else {
+      digits(n)
+    }
+  }
+}

@@ -1,5 +1,0 @@
-import std.io.write_stdout_utf8!
-
-fn main!() -> Result<Unit, PlatformError> {
-  "hello\n" |> write_stdout_utf8!()
-}

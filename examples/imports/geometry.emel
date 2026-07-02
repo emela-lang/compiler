@@ -1,0 +1,13 @@
+-- A library module. Only `pub` functions can be imported from it.
+-- This file has no `main`, so it is consumed via `import`, not checked
+-- on its own.
+
+module geometry
+
+pub fn square(n: Int) -> Int {
+  n * n
+}
+
+pub fn area(width: Int, height: Int) -> Int {
+  width * height
+}

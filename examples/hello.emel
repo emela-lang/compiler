@@ -1,0 +1,11 @@
+-- Uses the standard library to perform real I/O. The `io` effect is resolved
+-- by the selected backend's runtime (spec 0013).
+--
+--   emela build --backend js-node   --package examples/stdlib examples/hello.emel | node
+--   emela build --backend wasm-wasi --package examples/stdlib -o hello.wasm examples/hello.emel
+
+import std.io.print
+
+fn main() -> Unit uses { io } {
+  print("Hello, Emela!\n")
+}

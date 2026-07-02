@@ -1,0 +1,9 @@
+[package]
+name = "emela-codegen"
+version.workspace = true
+edition.workspace = true
+description = "Emela IR, the codegen Backend trait, tiers, artifacts, the backend registry, and the external-plugin protocol."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

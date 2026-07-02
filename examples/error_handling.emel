@@ -1,0 +1,51 @@
+-- Error handling with `throws` / `throw` / `?` / `try` / `catch`, plus enums,
+-- `match`, and `Option` (spec 0005 / 0011). The error channel is expressed with
+-- `throws E`; there is no built-in `Result` type.
+--
+-- Run with the js-node backend, which lowers errors to native exceptions:
+--   emela build --backend js-node examples/error_handling.emel -o out.js
+--   node out.js     # prints 51
+
+enum ParseError {
+    Empty
+    BadDigit
+}
+
+-- A throwing function declares its error type after the return type.
+fn parseDigit(s: String) -> Int throws ParseError uses {} {
+    throw ParseError.BadDigit
+}
+
+-- `try` / `catch` handles the error, resolving the throws channel so this
+-- function itself is non-throwing.
+fn parseOr(s: String, fallback: Int) -> Int uses {} {
+    try {
+        parseDigit(s)
+    } catch {
+        ParseError.Empty -> 0
+        ParseError.BadDigit -> fallback
+    }
+}
+
+-- `match` over an enum must be exhaustive.
+fn errorName(e: ParseError) -> String uses {} {
+    match e {
+        Empty -> "empty"
+        BadDigit -> "bad digit"
+    }
+}
+
+-- The absence of a value is `Option<T>`, not an error.
+fn unwrapOr(opt: Option<Int>, fallback: Int) -> Int uses {} {
+    match opt {
+        Some(value) -> value
+        None -> fallback
+    }
+}
+
+fn main() -> Int uses {} {
+    let parsed = parseOr("x", 42)
+    let present = unwrapOr(Some(8), 0)
+    let absent = unwrapOr(None, 1)
+    parsed + present + absent
+}

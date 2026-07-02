@@ -1,0 +1,9 @@
+import std.io.print
+import std.int.to_string
+import std.clock.now
+
+fn main() -> Int uses { io, clock } {
+    let start = now()
+    print(to_string(start))
+    start
+}

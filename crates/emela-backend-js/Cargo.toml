@@ -1,0 +1,8 @@
+[package]
+name = "emela-backend-js"
+version.workspace = true
+edition.workspace = true
+description = "JavaScript code-generation backend for Emela (Tier 2)."
+
+[dependencies]
+emela-codegen.workspace = true

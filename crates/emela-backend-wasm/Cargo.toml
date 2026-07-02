@@ -1,0 +1,10 @@
+[package]
+name = "emela-backend-wasm"
+version.workspace = true
+edition.workspace = true
+description = "WebAssembly (WASI / WAMR) code-generation backend for Emela (Tier 1)."
+
+[dependencies]
+emela-codegen.workspace = true
+wat.workspace = true
+wasmparser.workspace = true

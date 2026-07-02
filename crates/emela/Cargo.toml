@@ -1,0 +1,26 @@
+[package]
+name = "emela"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+description = "The Emela compiler frontend and CLI."
+
+[lib]
+name = "emela"
+path = "src/lib.rs"
+
+[[bin]]
+name = "emela"
+path = "src/main.rs"
+
+[dependencies]
+emela-codegen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+emela-backend-js = { workspace = true, optional = true }
+emela-backend-wasm = { workspace = true, optional = true }
+
+[features]
+default = ["backend-js", "backend-wasm"]
+backend-js = ["dep:emela-backend-js"]
+backend-wasm = ["dep:emela-backend-wasm"]

@@ -1,61 +1,71 @@
--- This file uses the largest subset the current compiler can type-check
--- and build.
+-- maximal.emel exercises the largest subset the current Emela compiler
+-- can type-check and lower to JavaScript:
+--
+--   * Int / Float arithmetic and Bool comparisons
+--   * String and Array<T> values, including nested arrays
+--   * typed and inferred `let` bindings, and block expressions
+--   * first-class functions: passing, returning, and `fn` closures
+--   * effect rows with `uses { ... }`
+--
+-- Run:
+--   emela check --backend js-node examples/maximal.emel
+--   emela build --backend js-node examples/maximal.emel
 
-#[requires(Stdout)]
-fn tick!() -> Unit {
-  ()
-}
-
-fn add(x: I32, y: I32) -> I32 {
+-- Plain functions over the primitive numeric types.
+fn add(x: Int, y: Int) -> Int {
   x + y
 }
 
-fn sub(x: I32, y: I32) -> I32 {
-  x - y
+fn scale(value: Float, factor: Float) -> Float {
+  value * factor
 }
 
-fn mul(x: I32, y: I32) -> I32 {
-  x * y
-}
-
-fn is_answer(value: I32) -> Bool {
-  value == 42
-}
-
-fn below_limit(value: I32) -> Bool {
+-- Comparisons produce Bool.
+fn below_limit(value: Int) -> Bool {
   value < 50
 }
 
-fn choose(flag: Bool, yes: I32, no: I32) -> I32 {
-  match flag {
-    true -> yes
-    false -> no
+-- Higher-order function: takes and calls a function value.
+fn apply(f: (Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+
+-- Returns a closure that captures `n`.
+fn make_adder(n: Int) -> (Int) -> Int {
+  fn (x: Int) -> Int {
+    x + n
   }
 }
 
-fn scoped(base: I32) -> I32 {
-  doubled: I32 = {
-    tmp: I32 = mul(base, 2)
-    tmp
-  }
-  adjusted: I32 = match below_limit(doubled) {
-    true -> add(doubled, 2)
-    false -> sub(doubled, 2)
-  }
-  adjusted
+-- This function is permitted to use the `Stdout` effect.
+fn log_line() -> Unit uses { Stdout } {
+  ()
 }
 
-fn main!() -> I32 {
-  tick!()
-  product: I32 = mul(6, 7)
-  matches: Bool = is_answer(product)
-  nested: I32 = {
-    inner: I32 = scoped(20)
-    inner
+-- Effects propagate to callers through `uses { ... }`.
+fn main() -> Int uses { Stdout } {
+  -- Local bindings, with and without type annotations.
+  let base: Int = add(20, 1)
+  let inc = make_adder(1)
+  let doubled = fn (x: Int) -> Int { x * 2 }
+
+  -- Blocks are expressions and can nest their own bindings.
+  let computed: Int = {
+    let stepped = apply(inc, base)
+    doubled(stepped)
   }
-  result: I32 = choose(matches, nested, 1)
-  match result == 42 {
-    true -> result
-    false -> 2
-  }
+
+  -- Float arithmetic and a Bool comparison.
+  let ratio: Float = scale(2.5, 4.0)
+  let small: Bool = below_limit(computed)
+
+  -- Arrays, including arrays of arrays.
+  let numbers: Array<Int> = [base, computed, 7]
+  let measurements: Array<Float> = [ratio, 1.5]
+  let grid: Array<Array<Int>> = [[1, 2], [3, 4]]
+
+  -- An effectful call; its `Stdout` effect flows up into `main`.
+  let printed: Unit = log_line()
+
+  computed
 }

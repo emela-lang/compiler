@@ -1,0 +1,15 @@
+-- The `std.io` module wraps the platform I/O functions (spec 0013).
+-- `extern fn` declares a platform function; the backend supplies its body.
+
+module io
+
+extern fn write_stdout(s: String) -> Unit uses { io }
+extern fn write_stderr(s: String) -> Unit uses { io }
+
+pub fn print(s: String) -> Unit uses { io } {
+  write_stdout(s)
+}
+
+pub fn eprint(s: String) -> Unit uses { io } {
+  write_stderr(s)
+}

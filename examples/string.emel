@@ -1,0 +1,10 @@
+-- String literals and local `let` bindings.
+
+fn greeting() -> String {
+  let message: String = "Hello, Emela!"
+  message
+}
+
+fn main() -> String {
+  greeting()
+}

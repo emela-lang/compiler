@@ -1,0 +1,23 @@
+-- Generic functions (spec 0014): one definition serves every type.
+--
+-- Type parameters are written after the name in `<...>`. They are opaque: the
+-- body cannot inspect a value of type `T`, only pass it around. Type arguments
+-- are inferred from the call's arguments; the compiler then monomorphizes each
+-- `(function, type arguments)` pair into a concrete specialization.
+
+fn identity<T>(x: T) -> T {
+  x
+}
+
+-- Generic over both the argument type `A` and the result type `B`.
+fn apply<A, B>(f: (A) -> B, x: A) -> B {
+  f(x)
+}
+
+fn main() -> Int {
+  -- `identity` is used at two different types, producing two specializations.
+  let greeting: String = identity("Emela")
+  let start: Int = identity(41)
+  -- `apply` is instantiated at A = Int, B = Int.
+  apply(fn (n: Int) -> Int { n + 1 }, start)
+}
